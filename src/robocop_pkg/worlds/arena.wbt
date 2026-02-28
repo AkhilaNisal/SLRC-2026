@@ -1,0 +1,580 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Parquetry.proto"
+
+WorldInfo {
+}
+Viewpoint {
+  orientation 0.004666093236082675 -0.8513417452845917 0.5245907550745604 5.7889932084036335
+  position -8.021298675378487 2.6184628876279836 3.0813129082584054
+}
+TexturedBackground {
+  luminosity 0.8
+}
+TexturedBackgroundLight {
+  luminosity 0.6
+  castShadows FALSE
+}
+RectangleArena {
+  floorSize 5 5
+  floorAppearance Parquetry {
+    type "light strip"
+  }
+}
+Solid {
+  translation 0 0 0.01
+  children [
+    Group {
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.964706 0.960784 0.956863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 40.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 50.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 51.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 52.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 53.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 54.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 55.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 56.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 57.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 58.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 59.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 60.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 61.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 62.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.180392 0.760784 0.494118
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 63.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.964706 0.960784 0.956863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 49.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.964706 0.960784 0.956863
+            transparency 0.8
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 47.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.964706 0.960784 0.956863
+            transparency 0.8
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 46.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.964706 0.960784 0.956863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 48.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.964706 0.960784 0.956863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 41.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.752941 0.109804 0.156863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 33.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.752941 0.109804 0.156863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 32.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.752941 0.109804 0.156863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 31.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.752941 0.109804 0.156863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 30.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.752941 0.109804 0.156863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 28.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.752941 0.109804 0.156863
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 29.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 12.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 11.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 10.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 9.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 8.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 7.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 6.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 5.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 4.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 3.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            roughness 1
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 2.dae"
+            ]
+          }
+        }
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0 0 0
+            roughness 1
+            metalness 0
+          }
+          geometry Mesh {
+            url [
+              "../resource/arena_meshes/Part Studio 1 - Part 1.dae"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+
+Robot {
+  children [
+    HingeJoint {
+      jointParameters HingeJointParameters {
+        axis 0 1 0
+        anchor 0 0 0.025
+      }
+      device [
+        RotationalMotor {
+          name "left wheel motor"
+        }
+      ]
+      endPoint Solid {
+        translation 0 0.045 0.025
+        children [
+          DEF WHEEL Transform {
+            rotation 1 0 0 1.5707996938995747
+            children [
+              Shape {
+                appearance PBRAppearance {
+                  baseColor 1 0 0
+                  roughness 1
+                  metalness 0
+                }
+                geometry Cylinder {
+                  height 0.01
+                  radius 0.025
+                }
+              }
+            ]
+          }
+        ]
+        name "left wheel"
+        boundingObject USE WHEEL
+        physics Physics {
+        }
+      }
+    }
+    HingeJoint {
+      jointParameters HingeJointParameters {
+        axis 0 1 0
+        anchor 0 0 0.025
+      }
+      device [
+        RotationalMotor {
+          name "right wheel motor"
+        }
+      ]
+      endPoint Solid {
+        translation 0 -0.045 0.025
+        children [
+          USE WHEEL
+        ]
+        name "right wheel"
+        boundingObject USE WHEEL
+        physics Physics {
+        }
+      }
+    }
+    Transform {
+      translation 0 0 0.0415
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0 0 1
+            roughness 1
+            metalness 0
+          }
+          geometry DEF BODY Cylinder {
+            height 0.08
+            radius 0.045
+          }
+        }
+      ]
+    }
+    DistanceSensor {
+      translation 0.042 0.02 0.063
+      rotation 0 0 1 0.5236003061004253
+      children [
+        DEF SENSOR Transform {
+          rotation 0 1 0 1.5708
+          children [
+            Shape {
+              appearance PBRAppearance {
+                baseColor 1 1 0
+                roughness 1
+                metalness 0
+              }
+              geometry Cylinder {
+                height 0.004
+                radius 0.008
+              }
+            }
+          ]
+        }
+      ]
+      name "ds0"
+      lookupTable [
+        0 1020 0
+        0.05 1020 0
+        0.15 0 0
+      ]
+      numberOfRays 2
+      aperture 1
+    }
+    DistanceSensor {
+      translation 0.042 -0.02 0.063
+      rotation 0 0 1 -0.5235996938995747
+      children [
+        USE SENSOR
+      ]
+      name "ds1"
+      lookupTable [
+        0 1020 0
+        0.05 1020 0
+        0.15 0 0
+      ]
+      numberOfRays 2
+      aperture 1
+    }
+  ]
+  boundingObject Transform {
+    translation 0 0 0.0415
+    children [
+      USE BODY
+    ]
+  }
+  physics Physics {
+  }
+  controller "<extern>"
+  name "robocop"
+}
+

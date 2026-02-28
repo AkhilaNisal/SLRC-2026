@@ -1,0 +1,31 @@
+<?xml version="1.0" ?>
+<robot name="robocop">
+  <webots>
+    <device reference="ds0" type="DistanceSensor">
+      <ros>
+        <topicName>/left_sensor</topicName>
+        <alwaysOn>true</alwaysOn>
+      </ros>
+    </device>
+
+    <device reference="ds1" type="DistanceSensor">
+      <ros>
+        <topicName>/right_sensor</topicName>
+        <alwaysOn>true</alwaysOn>
+      </ros>
+    </device>
+
+    <device reference="camera" type="Camera">
+      <ros>
+        <topicName>/camera/image</topicName>
+        <alwaysOn>true</alwaysOn>
+        <updateRate>30</updateRate>
+          <!-- This makes the image topic /camera/image/image_color instead of only /camera/image -->
+        <imageSuffix>/image_color</imageSuffix>
+        <cameraInfoSuffix>/camera_info</cameraInfoSuffix>
+      </ros>
+    </device>
+
+    <plugin type="robocop_pkg.robocop_driver.RobocopDriver" />
+  </webots>
+</robot>

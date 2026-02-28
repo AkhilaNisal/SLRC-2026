@@ -1,0 +1,139 @@
+#VRML_SIM R2025a utf8
+
+PROTO Robocop [
+  field SFString name "robocop"
+  field SFString controller "<extern>"
+  field SFVec3f translation 0 0 0.05
+  field SFRotation rotation 0 1 0 0
+] {
+  Robot {
+    name IS name
+    controller IS controller
+    translation IS translation
+    rotation IS rotation
+
+    children [
+      # --- LEFT WHEEL ---
+      HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0 0.045 0.025
+        }
+        device [
+          RotationalMotor {
+            name "left wheel motor"
+            maxVelocity 20
+            maxTorque 2
+          }
+        ]
+        endPoint Solid {
+          translation 0 0.045 0.025
+          children [
+            DEF WHEEL_SHAPE Shape {
+              appearance PBRAppearance {
+                baseColor 0.15 0.15 0.15
+                roughness 1
+                metalness 0
+              }
+              geometry Cylinder {
+                height 0.01
+                radius 0.025
+              }
+            }
+          ]
+          name "left wheel"
+          boundingObject USE WHEEL_SHAPE
+          physics Physics { }
+        }
+      }
+
+      # --- RIGHT WHEEL ---
+      HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0 -0.045 0.025
+        }
+        device [
+          RotationalMotor {
+            name "right wheel motor"
+            maxVelocity 20
+            maxTorque 2
+          }
+        ]
+        endPoint Solid {
+          translation 0 -0.045 0.025
+          children [
+            USE WHEEL_SHAPE
+          ]
+          name "right wheel"
+          boundingObject USE WHEEL_SHAPE
+          physics Physics { }
+        }
+      }
+
+      # --- BODY ---
+      Transform {
+        translation 0 0 0.0415
+        children [
+          Shape {
+            appearance PBRAppearance {
+              baseColor 0 0.3 1
+              roughness 1
+              metalness 0
+            }
+            geometry DEF BODY Cylinder {
+              height 0.08
+              radius 0.045
+            }
+          }
+        ]
+      }
+
+      # --- DISTANCE SENSORS ---
+      DistanceSensor {
+        name "ds0"
+        translation 0.042 0.02 0.063
+        rotation 0 0 1 0.523599
+        lookupTable [
+          0 1020 0
+          0.05 1020 0
+          0.15 0 0
+        ]
+        numberOfRays 2
+        aperture 1
+      }
+
+      DistanceSensor {
+        name "ds1"
+        translation 0.042 -0.02 0.063
+        rotation 0 0 1 -0.523599
+        lookupTable [
+          0 1020 0
+          0.05 1020 0
+          0.15 0 0
+        ]
+        numberOfRays 2
+        aperture 1
+      }
+
+      # --- CAMERA (optional, but you asked earlier) ---
+      Camera {
+        name "camera"
+        translation 0.06 0 0.08
+        rotation 0 1 0 0
+        width 640
+        height 480
+        fieldOfView 1.0472
+        near 0.01
+        far 50
+      }
+    ]
+
+    # collision + physics
+    boundingObject Transform {
+      translation 0 0 0.0415
+      children [ USE BODY ]
+    }
+    physics Physics { }
+  }
+}

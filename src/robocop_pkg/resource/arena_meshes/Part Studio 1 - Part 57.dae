@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<COLLADA version="1.4.1" xmlns="http://www.collada.org/2005/11/COLLADASchema">
+
+  <asset>
+    <contributor>
+      <authoring_tool>ONSHAPE BY PTC INC, 1.210</authoring_tool>
+    </contributor>
+    <created>2026-02-13T08:54:21</created>
+    <modified>2026-02-13T08:54:21</modified>
+    <unit meter="1" name="meters"/>
+    <up_axis>Z_UP</up_axis>
+  </asset>
+
+  <library_materials>
+    <material id="ID9" name="ID9">
+      <instance_effect url="#ID9-fx"/>
+    </material>
+  </library_materials>
+
+  <library_effects>
+    <effect id="ID9-fx" name="ID9">
+      <profile_COMMON>
+        <technique sid="COMMON">
+          <lambert>
+            <diffuse>
+              <color sid="diffuse">0.231373 0.376471 0.705882 1</color>
+            </diffuse>
+            <transparent opaque="A_ONE">
+              <color sid="transparent">1 1 1 1</color>
+            </transparent>
+            <transparency>
+              <float sid="transparency">1</float>
+            </transparency>
+          </lambert>
+        </technique>
+        <extra>
+          <technique profile="OTHER">
+            <double_sided>1</double_sided>
+          </technique>
+        </extra>
+      </profile_COMMON>
+    </effect>
+  </library_effects>
+
+  <library_geometries>
+    <geometry id="ID3">
+      <mesh>
+        <source id="ID4">
+          <float_array count="90" id="ID5">0.705456 0.579111 0.0297214 0.707456 0.579111 0.0297214 0.707456 0.587143 0.005 0.705456 0.587143 0.005 0.705456 0.613137 0.005 0.707456 0.587143 0.005 0.707456 0.613137 0.005 0.705456 0.587143 0.005 0.705456 0.613137 0.005 0.707456 0.613137 0.005 0.707456 0.621169 0.0297214 0.705456 0.621169 0.0297214 0.705456 0.621169 0.0297214 0.707456 0.621169 0.0297214 0.707456 0.60014 0.045 0.705456 0.60014 0.045 0.705456 0.60014 0.045 0.707456 0.60014 0.045 0.707456 0.579111 0.0297214 0.705456 0.579111 0.0297214 0.707456 0.579111 0.0297214 0.707456 0.613137 0.005 0.707456 0.587143 0.005 0.707456 0.621169 0.0297214 0.707456 0.60014 0.045 0.705456 0.579111 0.0297214 0.705456 0.613137 0.005 0.705456 0.621169 0.0297214 0.705456 0.587143 0.005 0.705456 0.60014 0.045</float_array>
+          <technique_common>
+            <accessor count="30" source="#ID5" stride="3">
+              <param name="X" type="float"/>
+              <param name="Y" type="float"/>
+              <param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="ID6">
+          <float_array count="90" id="ID7">-0 -0.951057 -0.309017 -0 -0.951057 -0.309017 -0 -0.951057 -0.309017 -0 -0.951057 -0.309017 -0 -0 -1 -0 -0 -1 -0 -0 -1 -0 -0 -1 0 0.951057 -0.309017 0 0.951057 -0.309017 0 0.951057 -0.309017 0 0.951057 -0.309017 0 0.587785 0.809017 0 0.587785 0.809017 0 0.587785 0.809017 0 0.587785 0.809017 0 -0.587785 0.809017 0 -0.587785 0.809017 0 -0.587785 0.809017 0 -0.587785 0.809017 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 -1 -0 -0 -1 -0 -0 -1 -0 -0 -1 -0 -0 -1 -0 -0</float_array>
+          <technique_common>
+            <accessor count="30" source="#ID7" stride="3">
+              <param name="X" type="float"/>
+              <param name="Y" type="float"/>
+              <param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="ID8">
+          <input semantic="POSITION" source="#ID4"/>
+          <input semantic="NORMAL" source="#ID6"/>
+        </vertices>
+        <triangles count="16" material="ID9">
+          <input offset="0" semantic="VERTEX" source="#ID8"/>
+          <p>0 2 1 0 3 2 4 6 5 5 7 4 8 10 9 8 11 10 12 14 13 12 15 14 16 18 17 16 19 18 20 22 21 21 23 20 20 23 24 25 27 26 25 26 28 27 25 29</p>
+        </triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+
+  <library_visual_scenes>
+    <visual_scene id="ID1">
+      <node id="ID2">
+        <instance_geometry url="#ID3">
+          <bind_material>
+            <technique_common>
+              <instance_material symbol="ID9" target="#ID9"/>
+            </technique_common>
+          </bind_material>
+        </instance_geometry>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+
+  <scene>
+    <instance_visual_scene url="#ID1"/>
+  </scene>
+
+  <library_nodes/>
+
+</COLLADA>
