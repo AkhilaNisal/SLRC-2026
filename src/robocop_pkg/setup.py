@@ -44,6 +44,7 @@ setup(
             'robocop_driver = robocop_pkg.robocop_driver:main',
             'obstacle_avoider = robocop_pkg.obstacle_avoider:main',
             'white_line_follower = robocop_pkg.white_line_follower:main',
+            'red_box_seeker = robocop_pkg.red_box_seeker:main',
         ],
     },
 )
