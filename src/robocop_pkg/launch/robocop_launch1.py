@@ -62,6 +62,63 @@ def generate_launch_description():
         }]
     )
 
+    perspective_rectifier = Node(
+        package='robocop_pkg',
+        executable='perspective_rectifier',
+        name='perspective_rectifier',
+        output='screen',
+        parameters=[{
+            'input_image_topic': '/camera/image/image_color',
+            'output_image_topic': '/camera/image_rect',
+            'homography_topic': '/camera/homography',
+            'output_width': 640,
+            'output_height': 480,
+
+            # top-left
+            'src_tl_x': 300.0,
+            'src_tl_y': 300.0,
+
+            # top-right
+            'src_tr_x': 340.0,
+            'src_tr_y': 300.0,
+
+            # bottom-right
+            'src_br_x': 620.0,
+            'src_br_y': 460.0,
+
+            # bottom-left
+            'src_bl_x': 40.0,
+            'src_bl_y': 460.0,
+        }]
+    )
+
+
+
+    red_box_perpendicular_seeker = Node(
+        package='robocop_pkg',
+        executable='red_box_perpendicular_seeker',   # must match setup.py entry point
+        name='red_box_perpendicular_seeker',
+        output='screen'
+    )
+
+
+    task2 = Node(
+        package='robocop_pkg',
+        executable='task2',   # must match setup.py entry point
+        name='task2',
+        output='screen',
+    
+    )
+    task2_new = Node(
+        package='robocop_pkg',
+        executable='task2_new',   # must match setup.py entry point
+        name='task2_new',
+        output='screen',
+    
+    )
+
+
+
     return LaunchDescription([
         mode_arg,
 
@@ -69,7 +126,11 @@ def generate_launch_description():
         webots._supervisor,   # ✅ REQUIRED when ros2_supervisor=True
 
         my_robot_driver,
-        white_line_follower,
+        # white_line_follower,
+        # perspective_rectifier,
+        # red_box_perpendicular_seeker,
+        task2_new,
+
 
         RegisterEventHandler(
             event_handler=OnProcessExit(

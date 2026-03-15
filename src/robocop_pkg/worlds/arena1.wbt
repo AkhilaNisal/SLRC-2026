@@ -18,6 +18,15 @@ TexturedBackgroundLight {
   luminosity 0.6
   castShadows FALSE
 }
+SpotLight {
+  location 3 0 2
+  direction -1 0 -0.3
+  intensity 0.5
+  beamWidth 0.6
+  cutOffAngle 0.9
+  color 1 1 1
+  castShadows FALSE
+}
 RectangleArena {
   floorSize 5 5
   floorAppearance Parquetry {
@@ -642,6 +651,7 @@ Solid {
 }
 
 Robot {
+  translation 0.75 -1.05 0
   children [
     HingeJoint {
       jointParameters HingeJointParameters {
@@ -717,8 +727,8 @@ Robot {
       ]
     }
     DistanceSensor {
-      translation 0.042 0.02 0.063
-      rotation 0 0 1 0.5236003061004253
+      translation 0.0 0.045 0.033
+      rotation 0 0 1 1.5708
       children [
         DEF SENSOR Transform {
           rotation 0 1 0 1.5708
@@ -737,29 +747,31 @@ Robot {
           ]
         }
       ]
-      name "ds0"
+      name "ds_left"
       lookupTable [
-        0 1020 0
-        0.05 1020 0
-        0.15 0 0
+        0    1020 0
+        0.2  800  0
+        0.5  400  0
+        1.0  0    0
       ]
-      numberOfRays 2
-      aperture 1
+      numberOfRays 1
+      aperture 0.05
     }
     DistanceSensor {
-      translation 0.042 -0.02 0.063
-      rotation 0 0 1 -0.5235996938995747
+      translation 0.0 -0.045 0.033
+      rotation 0 0 1 -1.5708
       children [
         USE SENSOR
       ]
-      name "ds1"
+      name "ds_right"
       lookupTable [
-        0 1020 0
-        0.05 1020 0
-        0.15 0 0
+        0    1020 0
+        0.2  800  0
+        0.5  400  0
+        1.0  0    0
       ]
-      numberOfRays 2
-      aperture 1
+      numberOfRays 1
+      aperture 0.05
     }
 
     Camera {
