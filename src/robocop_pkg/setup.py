@@ -8,6 +8,7 @@ data_files.append(('share/ament_index/resource_index/packages', ['resource/' + p
 data_files.append(('share/' + package_name + '/launch', ['launch/robocop_launch.py']))
 data_files.append(('share/' + package_name + '/launch', ['launch/robocop_launch1.py']))
 data_files.append(('share/' + package_name + '/launch', ['launch/robocop_launchnew.py']))
+data_files.append(('share/' + package_name + '/launch', ['launch/robocop_launch_obstacle.py']))
 
 
 data_files.append(('share/' + package_name + '/worlds', ['worlds/my_world.wbt']))
@@ -43,6 +44,7 @@ setup(
         'console_scripts': [
             'robocop_driver = robocop_pkg.robocop_driver:main',
             'obstacle_avoider = robocop_pkg.obstacle_avoider:main',
+            'obstacle_seeker = robocop_pkg.obstacle_seeker:main',
             'white_line_follower = robocop_pkg.white_line_follower:main',
             'red_box_seeker = robocop_pkg.red_box_seeker:main',
         ],

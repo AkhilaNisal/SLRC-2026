@@ -106,27 +106,33 @@ class RedBoxSeeker(Node):
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
         return mask
 
-    def pick_largest_blob(self, mask: np.ndarray):
+    def pick_target_blob(self, mask: np.ndarray):
         # Returns (area, cx, cy, bbox) in ROI coords, or None
+        # Picks the valid blob furthest to the left (smallest cx)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best = None
-        best_area = 0
+        valid_blobs = []
 
         for c in contours:
             a = cv2.contourArea(c)
             if a < self.min_area:
                 continue
-            if a > best_area:
-                x, y, w, h = cv2.boundingRect(c)
-                M = cv2.moments(c)
-                if M["m00"] <= 1e-6:
-                    continue
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                best_area = a
-                best = (a, cx, cy, (x, y, w, h), c)
+            
+            x, y, w, h = cv2.boundingRect(c)
+            M = cv2.moments(c)
+            if M["m00"] <= 1e-6:
+                continue
+            
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            valid_blobs.append((a, cx, cy, (x, y, w, h), c))
 
-        return best
+        if not valid_blobs:
+            return None
+            
+        # Sort by x coordinate (cx), ascending (leftmost first)
+        valid_blobs.sort(key=lambda blob: blob[1])
+        
+        return valid_blobs[0]
 
     def image_cb(self, msg: Image):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -136,7 +142,7 @@ class RedBoxSeeker(Node):
         roi = frame[y0:H, 0:W]
 
         mask = self.build_red_mask(roi)
-        chosen = self.pick_largest_blob(mask)
+        chosen = self.pick_target_blob(mask)
 
         twist = Twist()
         reached = False
@@ -146,32 +152,52 @@ class RedBoxSeeker(Node):
             area, cx, cy, (x, y, w, h), contour = chosen
             detected = True
 
+            error_x = float(cx - (W / 2.0))  # + => target to right
+
             # "Reached" condition (big patch => close)
             if area >= self.close_area:
-                reached = True
-                twist.linear.x = 0.0
-                twist.angular.z = 0.0
+                # Still checking alignment after reaching to ensure it ends perfectly head on
+                alignment_error = abs(error_x) / (W / 2.0)
+                if alignment_error > 0.01:  # Enforce sub-1% pixel-perfect centering
+                    # Still rotate to face it head on even when close, with higher minimum rotation speed
+                    w_cmd = -self.kp_ang * error_x * 5.0
+                    
+                    # Ensure minimum rotation speed so friction doesn't halt fine adjustments
+                    min_rot = 0.2
+                    if w_cmd > 0 and w_cmd < min_rot:
+                        w_cmd = min_rot
+                    elif w_cmd < 0 and w_cmd > -min_rot:
+                        w_cmd = -min_rot
+                        
+                    twist.angular.z = float(self.clamp(w_cmd, -0.8, 0.8))
+                    twist.linear.x = 0.0
+                else:
+                    reached = True
+                    twist.linear.x = 0.0
+                    twist.angular.z = 0.0
             else:
-                # Heading control: steer to center of image
-                error_x = float(cx - (W / 2.0))  # + => target to right
-                w_cmd = -self.kp_ang * error_x
+                # Approach phase: steering using camera
+                # Use slightly stronger gain to snap to center
+                w_cmd = -self.kp_ang * error_x * 1.5
                 w_cmd = self.clamp(w_cmd, -self.max_angular, self.max_angular)
 
                 # Smooth angular
                 w_cmd = (1.0 - self.alpha_w) * w_cmd + self.alpha_w * self.prev_w
                 self.prev_w = w_cmd
 
-                # Speed control:
-                # - faster when target is small (far)
-                # - slower when turning hard (keeps a nice smooth curve)
-                # Use area fraction as a distance proxy
+                # Speed control
                 area_frac = float(area) / float(W * (H - y0) + 1e-6)
-                # Map area_frac to a "go speed" (tune as needed)
-                v_cmd = self.max_linear * (1.0 - self.clamp(area_frac * 8.0, 0.0, 0.9))
-                v_cmd = self.clamp(v_cmd, self.min_linear, self.max_linear)
+                base_v_cmd = self.max_linear * (1.0 - self.clamp(area_frac * 8.0, 0.0, 0.9))
+                base_v_cmd = self.clamp(base_v_cmd, self.min_linear, self.max_linear)
 
-                # Slow down more when turning
-                v_cmd = v_cmd / (1.0 + self.turn_slowdown * abs(w_cmd))
+                # Keep perfect center on approach:
+                # If target is off-center by more than 10%, stop driving forward and just rotate.
+                alignment_error = abs(error_x) / (W / 2.0)
+                if alignment_error > 0.1:
+                    v_cmd = 0.0
+                else:
+                    # Progressively reduce base speed as it gets slightly off center to maintain head-on accuracy
+                    v_cmd = base_v_cmd * (1.0 - (alignment_error / 0.1))
 
                 twist.linear.x = float(v_cmd)
                 twist.angular.z = float(w_cmd)

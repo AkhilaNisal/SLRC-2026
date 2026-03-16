@@ -66,7 +66,8 @@ def generate_launch_description():
             'min_area': 5000,
             'h_low': 0, 's_low': 0, 'v_low': 180,
             'h_high': 180, 's_high': 70, 'v_high': 255,
-        }]
+        }],
+        condition=IfCondition(PythonExpression(["'", behavior, "' == 'line'"]))
     )
 
     # Run only if behavior == "red"
@@ -82,7 +83,7 @@ def generate_launch_description():
 
             # Tuning (you can adjust later)
             'roi_y_start': 0.30,
-            'min_area': 1500,
+            'min_area': 100,      # Decreased vastly so it triggers continuously over small contours at far distances
             'close_area': 45000,
             'kp_ang': 0.0045,
             'max_linear': 0.25,

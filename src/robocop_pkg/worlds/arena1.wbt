@@ -8,8 +8,8 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 WorldInfo {
 }
 Viewpoint {
-  orientation 0.004666093236082675 -0.8513417452845917 0.5245907550745604 5.7889932084036335
-  position -8.021298675378487 2.6184628876279836 3.0813129082584054
+  orientation -0.04690734060283121 -0.9950820890362618 0.08724297952728963 4.538343532286831
+  position 0.9208542022086738 0.8253370569245727 9.658959166432188
 }
 TexturedBackground {
   luminosity 0.8
@@ -640,8 +640,8 @@ Solid {
   }
   locked TRUE
 }
-
 Robot {
+  translation 0.62 1 0
   children [
     HingeJoint {
       jointParameters HingeJointParameters {
@@ -656,7 +656,7 @@ Robot {
       endPoint Solid {
         translation 0 0.045 0.025
         children [
-          DEF WHEEL Transform {
+          DEF WHEEL Pose {
             rotation 1 0 0 1.5707996938995747
             children [
               Shape {
@@ -700,7 +700,7 @@ Robot {
         }
       }
     }
-    Transform {
+    Pose {
       translation 0 0 0.0415
       children [
         Shape {
@@ -720,7 +720,7 @@ Robot {
       translation 0.042 0.02 0.063
       rotation 0 0 1 0.5236003061004253
       children [
-        DEF SENSOR Transform {
+        DEF SENSOR Pose {
           rotation 0 1 0 1.5708
           children [
             Shape {
@@ -761,21 +761,17 @@ Robot {
       numberOfRays 2
       aperture 1
     }
-
     Camera {
-      name "camera"
       translation 0.05 0 0.08
       rotation 0 1 0 0
+      fieldOfView 1.0472
       width 640
       height 480
-      fieldOfView 1.0472   # ~60 degrees
-      near 0.01
       far 50
     }
   ]
-
-
-  boundingObject Transform {
+  name "robocop"
+  boundingObject Pose {
     translation 0 0 0.0415
     children [
       USE BODY
@@ -784,5 +780,4 @@ Robot {
   physics Physics {
   }
   controller "<extern>"
-  name "robocop"
 }
