@@ -1,0 +1,1 @@
+controller_joint_names: ['', 'base_rotating_waste_joint', 'rotating_waste_arm1_joint', 'arm1_arm2_joint', 'arm2_gripper_base_joint', 'gripper_base_left_joint', 'gripper_base_right_joint', ]
