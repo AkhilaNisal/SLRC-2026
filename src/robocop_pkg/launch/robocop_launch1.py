@@ -16,7 +16,7 @@ from webots_ros2_driver.webots_controller import WebotsController
 def generate_launch_description():
     package_dir = get_package_share_directory('robocop_pkg')
     urdf_path = os.path.join(package_dir, 'resource', 'robocop.urdf')
-    world_path = os.path.join(package_dir, 'worlds', 'arena1.wbt')
+    world_path = os.path.join(package_dir, 'worlds', 'arena2.wbt')
 
     # Read URDF file content (robot_description should be the XML string)
     with open(urdf_path, 'r') as f:
@@ -133,6 +133,23 @@ def generate_launch_description():
     
     )
 
+    task_manager = Node(
+    package='robocop_pkg',
+    executable='task_manager',
+    name='task_manager',
+    output='screen',
+    parameters=[{
+        'task2_package': 'robocop_pkg',
+        'task2_executable': 'task2_with_arm',
+        'task3_package': 'robocop_pkg',
+        'task3_executable': 'task3',
+        'task2_status_topic': '/task2/status',
+        'task3_status_topic': '/task3/status',
+        'startup_delay_sec': 2.0,
+        'shutdown_wait_sec': 3.0,
+    }]
+)
+
 
 
     return LaunchDescription([
@@ -148,6 +165,7 @@ def generate_launch_description():
         # task2_new,
         # task2_with_arm,
         task3,
+        # task_manager,
 
 
         RegisterEventHandler(

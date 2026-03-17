@@ -121,7 +121,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # Task 2 finish behavior
         # =========================
         self.declare_parameter('target_box_count', 6)
-        self.declare_parameter('task2_finish_wall_distance', 0.20)
+        self.declare_parameter('task2_finish_wall_distance', 0.10)
         self.declare_parameter('task2_finish_wall_frames', 5)
 
         # =========================
