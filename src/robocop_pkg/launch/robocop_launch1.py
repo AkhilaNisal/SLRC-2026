@@ -164,8 +164,8 @@ def generate_launch_description():
         # red_box_perpendicular_seeker,
         # task2_new,
         # task2_with_arm,
-        task3,
-        # task_manager,
+        # task3,
+        task_manager,
 
 
         RegisterEventHandler(

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-
 # starting pos in arena :translation 0.75 -1.05 0
 
 import math
@@ -121,8 +120,9 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # Task 2 finish behavior
         # =========================
         self.declare_parameter('target_box_count', 6)
-        self.declare_parameter('task2_finish_wall_distance', 0.10)
-        self.declare_parameter('task2_finish_wall_frames', 5)
+        self.declare_parameter('task2_finish_wall_distance', 0.15)
+        self.declare_parameter('task2_finish_wall_frames', 3)
+        self.declare_parameter('task2_finish_forward_speed', 0.08)
 
         # =========================
         # Read params
@@ -202,6 +202,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.target_box_count = int(self.get_parameter('target_box_count').value)
         self.task2_finish_wall_distance = float(self.get_parameter('task2_finish_wall_distance').value)
         self.task2_finish_wall_frames = int(self.get_parameter('task2_finish_wall_frames').value)
+        self.task2_finish_forward_speed = float(self.get_parameter('task2_finish_forward_speed').value)
 
         # =========================
         # ROS interfaces
@@ -571,7 +572,10 @@ class WhiteLineFollowerWithBoxVisit(Node):
             self.finish_wall_counter = 0
             return False
 
-        front_hit = self.valid_range(self.front_range) and self.front_range <= self.task2_finish_wall_distance
+        front_hit = (
+            self.valid_range(self.front_range)
+            and self.front_range <= self.task2_finish_wall_distance
+        )
 
         if front_hit:
             self.finish_wall_counter += 1
@@ -703,30 +707,35 @@ class WhiteLineFollowerWithBoxVisit(Node):
             self.run_line_cross_sequence(bottom_area, twist)
 
         elif self.state == self.STATE_FOLLOW_LINE:
-            if area > self.min_area:
-                cx = int(M["m10"] / area)
-                error = float(cx - (w // 2))
-                ang = -self.kp * error
-                ang = self.clamp(ang, -self.max_angular, self.max_angular)
-
-                twist.linear.x = self.linear_speed
-                twist.angular.z = ang
-            else:
-                twist.linear.x = self.search_linear
-                twist.angular.z = self.search_angular
-
-            if self.should_finish_task2():
-                twist.linear.x = 0.0
+            # After all boxes are complete, prioritize final wall stopping.
+            if self.boxes_completed >= self.target_box_count:
+                twist.linear.x = self.task2_finish_forward_speed
                 twist.angular.z = 0.0
-                self.state = self.STATE_TASK2_DONE
-                self.task2_done = True
-                self.stop_robot()
-                self.publish_task_done()
-                self.get_logger().info(
-                    f"Task 2 complete: boxes_completed={self.boxes_completed}, "
-                    f"front wall reached at white line."
-                )
-            elif self.boxes_completed < self.target_box_count:
+
+                if self.should_finish_task2():
+                    twist.linear.x = 0.0
+                    twist.angular.z = 0.0
+                    self.state = self.STATE_TASK2_DONE
+                    self.task2_done = True
+                    self.stop_robot()
+                    self.publish_task_done()
+                    self.get_logger().info(
+                        f"Task 2 complete: boxes_completed={self.boxes_completed}, "
+                        f"front wall reached. front_range={self.fmt_range(self.front_range)}"
+                    )
+            else:
+                if area > self.min_area:
+                    cx = int(M["m10"] / area)
+                    error = float(cx - (w // 2))
+                    ang = -self.kp * error
+                    ang = self.clamp(ang, -self.max_angular, self.max_angular)
+
+                    twist.linear.x = self.linear_speed
+                    twist.angular.z = ang
+                else:
+                    twist.linear.x = self.search_linear
+                    twist.angular.z = self.search_angular
+
                 side = self.choose_box_side()
                 if side is not None:
                     twist.linear.x = 0.0
@@ -796,6 +805,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
             if self.pick_result_ready:
                 if self.pick_result_success:
                     self.boxes_completed += 1
+                    self.finish_wall_counter = 0
                     self.state = self.STATE_BOX_TURN_BACK_180
                     self.turn_start_time = self.get_clock().now()
                     self.get_logger().info(
@@ -874,6 +884,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 f"red_found={red_found} red_area={int(red_area)} "
                 f"pick_in_progress={self.pick_in_progress} pick_feedback='{self.pick_feedback_text}' "
                 f"boxes_completed={self.boxes_completed} "
+                f"finish_counter={self.finish_wall_counter}/{self.task2_finish_wall_frames} "
                 f"cmd(v={twist.linear.x:.2f}, w={twist.angular.z:.2f})"
             )
 
@@ -949,8 +960,18 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         cv2.putText(
             vis,
-            f"active_box={self.active_box_side} red_found={red_found}",
+            f"finish_counter={self.finish_wall_counter}/{self.task2_finish_wall_frames}",
             (10, 215),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (120, 255, 220),
+            2
+        )
+
+        cv2.putText(
+            vis,
+            f"active_box={self.active_box_side} red_found={red_found}",
+            (10, 245),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (200, 255, 200),
@@ -960,7 +981,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"pick='{self.pick_feedback_text}'",
-            (10, 245),
+            (10, 275),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 200, 100),
@@ -970,7 +991,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"cmd v={twist.linear.x:.2f} w={twist.angular.z:.2f}",
-            (10, 275),
+            (10, 305),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 255, 0),
@@ -1002,6 +1023,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 f"front={self.display_range(self.front_range)} "
                 f"counts(L,R)=({self.left_box_count},{self.right_box_count}) "
                 f"boxes_completed={self.boxes_completed}/{self.target_box_count} "
+                f"finish_counter={self.finish_wall_counter}/{self.task2_finish_wall_frames} "
                 f"active_box={self.active_box_side} "
                 f"pick_in_progress={self.pick_in_progress} "
                 f"pick_result_ready={self.pick_result_ready} "
