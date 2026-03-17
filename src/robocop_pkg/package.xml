@@ -7,6 +7,8 @@
   <maintainer email="wedamestrigean@gmail.com">akhila-wedamestrige</maintainer>
   <license>Apache-2.0</license>
 
+  <depend>robot_arm_interfaces</depend>
+
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
   <depend>webots_ros2_driver</depend>

@@ -117,6 +117,22 @@ def generate_launch_description():
     
     )
 
+    task2_with_arm = Node(
+        package='robocop_pkg',
+        executable='task2_with_arm',   # must match setup.py entry point
+        name='task2_with_arm',
+        output='screen',
+    
+    )
+
+    task3 = Node(
+        package='robocop_pkg',
+        executable='task3',   # must match setup.py entry point
+        name='task3',
+        output='screen',
+    
+    )
+
 
 
     return LaunchDescription([
@@ -129,7 +145,9 @@ def generate_launch_description():
         # white_line_follower,
         # perspective_rectifier,
         # red_box_perpendicular_seeker,
-        task2_new,
+        # task2_new,
+        # task2_with_arm,
+        task3,
 
 
         RegisterEventHandler(

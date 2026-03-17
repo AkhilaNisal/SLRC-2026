@@ -17,7 +17,7 @@ joint_limits:
     has_velocity_limits: true
     max_velocity: 2.0
     has_acceleration_limits: true
-    max_acceleration: 02.0
+    max_acceleration: 2.0
   base_rotating_waste_joint:
     has_velocity_limits: true
     max_velocity: 2.0
