@@ -1,0 +1,7 @@
+<library path="rpi_arm_hardware">
+  <class name="rpi_arm_hardware::RPiArmHardwareInterface"
+         type="rpi_arm_hardware::RPiArmHardwareInterface"
+         base_class_type="hardware_interface::SystemInterface">
+    Raspberry Pi arm hardware interface via local Python PCA9685 bridge
+  </class>
+</library>

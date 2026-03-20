@@ -6,8 +6,12 @@
 
             <!-- <plugin>arduino_arm_hardware::ArduinoArmHardwareInterface</plugin>
                 <param name="port">/dev/ttyACM0</param> -->
-                    <plugin>arm_hardware/ArmHardwareInterface</plugin>
                 <!-- <plugin>mock_components/GenericSystem</plugin> -->
+            
+            <plugin>rpi_arm_hardware::RPiArmHardwareInterface</plugin>
+                <param name="host">127.0.0.1</param>
+                <param name="port">9999</param>
+            
             </hardware>
 
 
