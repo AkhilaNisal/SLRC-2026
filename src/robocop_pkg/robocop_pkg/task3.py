@@ -50,14 +50,14 @@ class Task3Node(Node):
         self.declare_parameter('max_angular_line', 1.2)
 
         self.declare_parameter('turn_left_angular_speed', 0.8)
-        self.declare_parameter('turn_left_90_time', 2.15)
+        self.declare_parameter('turn_left_90_time', 2.25)
         self.declare_parameter('post_turn_wait_time', 0.8)
 
         self.declare_parameter('initial_forward_distance', 0.50)
         self.declare_parameter('initial_forward_speed', 0.12)
 
-        self.declare_parameter('junction_turn_speed', 0.75)
-        self.declare_parameter('junction_turn_90_time', 2.05)
+        self.declare_parameter('junction_turn_speed', 0.8)
+        self.declare_parameter('junction_turn_90_time', 2.25)
         self.declare_parameter('junction_confirm_frames', 4)
 
         self.declare_parameter('pre_turn_distance', 0.3)
@@ -892,10 +892,10 @@ class Task3Node(Node):
             )
 
         cv2.imshow("task3_camera", vis)
-        cv2.imshow("task3_white_mask", white_mask)
+        # cv2.imshow("task3_white_mask", white_mask)
         cv2.imshow("task3_side_mask", side_mask)
-        cv2.imshow("task3_green_mask", green_mask)
-        cv2.imshow("task3_blue_mask", blue_mask)
+        # cv2.imshow("task3_green_mask", green_mask)
+        # cv2.imshow("task3_blue_mask", blue_mask)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):

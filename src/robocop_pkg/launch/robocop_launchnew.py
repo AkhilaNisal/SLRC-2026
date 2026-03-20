@@ -1,115 +1,116 @@
-import os
-
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, RegisterEventHandler, EmitEvent
-from launch.conditions import IfCondition
-from launch.event_handlers import OnProcessExit
-from launch.events import Shutdown
-from launch.substitutions import LaunchConfiguration, PythonExpression
-
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
-
-from webots_ros2_driver.webots_launcher import WebotsLauncher
-from webots_ros2_driver.webots_controller import WebotsController
 
 
 def generate_launch_description():
-    package_dir = get_package_share_directory('robocop_pkg')
-    urdf_path = os.path.join(package_dir, 'resource', 'robocop.urdf')
-    world_path = os.path.join(package_dir, 'worlds', 'arena1.wbt')
-
-    # robot_description should be XML string
-    with open(urdf_path, 'r') as f:
-        robot_description = f.read()
-
-    # Webots mode arg
-    mode_arg = DeclareLaunchArgument(
-        'mode',
-        default_value='realtime',
-        description='Webots simulation mode: realtime, fast, headless, pause'
-    )
-    mode = LaunchConfiguration('mode')
-
-    # Behavior arg: choose which controller node to run
-    behavior_arg = DeclareLaunchArgument(
-        'behavior',
-        default_value='red',
-        description='Robot behavior: red (red_box_seeker) or line (white_line_follower)'
-    )
-    behavior = LaunchConfiguration('behavior')
-
-    webots = WebotsLauncher(
-        world=world_path,
-        mode=mode,
-        ros2_supervisor=True
+    camera_feed_node = Node(
+        package='camera_feed',
+        executable='camera_feed_node',
+        name='camera_feed_node',
+        output='screen'
     )
 
-    my_robot_driver = WebotsController(
-        robot_name='robocop',
-        parameters=[{'robot_description': robot_description}],
-        respawn=True
-    )
-
-        
-    white_line_follower = Node(
-        package='robocop_pkg',                 # ✅ REQUIRED
-        executable='white_line_follower',      # must exist in setup.py entry_points
-        name='white_line_follower',
+    cmd_vel_stepper_node = Node(
+        package='stepper_control',
+        executable='cmd_vel_stepper_node',
+        name='cmd_vel_stepper_node',
         output='screen',
         parameters=[{
-            'image_topic': '/camera/image/image_color',
+            'wheel_radius': 0.0325,
+            'wheel_base': 0.20,
+            'steps_per_rev': 200,
+            'microsteps': 16,
+            'max_steps_per_sec': 4000.0,
+            'accel_steps_per_sec2': 3500.0,
+            'decel_steps_per_sec2': 3500.0,
+            'cmd_vel_timeout': 0.2,
+            'chip_name': 'gpiochip4',
+            'left_en_pin': 22,
+            'left_dir_pin': 23,
+            'left_step_pin': 24,
+            'right_en_pin': 12,
+            'right_dir_pin': 5,
+            'right_step_pin': 6,
+            'enable_active_low': True,
+            'left_dir_inverted': False,
+            'right_dir_inverted': True,
             'cmd_vel_topic': '/cmd_vel',
-            'linear_speed': 0.15,
-            'kp': 0.004,
-            'roi_y_start': 0.60,
-            'min_area': 5000,
-            'h_low': 0, 's_low': 0, 'v_low': 180,
-            'h_high': 180, 's_high': 70, 'v_high': 255,
         }]
     )
 
-    # Run only if behavior == "red"
-    red_box_seeker = Node(
+    robot_arm_action_server = Node(
         package='robocop_pkg',
-        executable='red_box_seeker',
-        name='red_box_seeker',
+        executable='robot_arm_action_server',
+        name='robot_arm_action_server',
         output='screen',
         parameters=[{
-            # Change these if your topics differ:
-            'image_topic': '/camera/image/image_color',
-            'cmd_vel_topic': '/cmd_vel',
+            'action_name': '/pick_box',
+            'startup_delay_sec': 1.0,
+            'step_pause_sec': 0.5,
+            'max_box_count': 6,
+            'arm_group': 'robot_arm',
+            'gripper_group': 'gripper',
+            'restore_box_count': 3,
+        }]
+    )
 
-            # Tuning (you can adjust later)
-            'roi_y_start': 0.30,
-            'min_area': 1500,
-            'close_area': 45000,
-            'kp_ang': 0.0045,
-            'max_linear': 0.25,
-            'min_linear': 0.05,
-            'max_angular': 1.5,
-            'search_angular': 0.35,
-            'search_linear': 0.0,
-        }],
-        condition=IfCondition(PythonExpression(["'", behavior, "' == 'red'"]))
+    task_manager = Node(
+        package='robocop_pkg',
+        executable='task_manager',
+        name='task_manager',
+        output='screen',
+        parameters=[{
+            'task2_package': 'robocop_pkg',
+            'task2_executable': 'task2_with_arm',
+            'task3_package': 'robocop_pkg',
+            'task3_executable': 'task3',
+            'task2_status_topic': '/task2/status',
+            'task3_status_topic': '/task3/status',
+            'startup_delay_sec': 2.0,
+            'shutdown_wait_sec': 3.0,
+        }]
+    )
+
+    tof_dual_node = Node(
+        package='tof_sensors',
+        executable='tof_dual_node',
+        name='tof_dual_node',
+        output='screen',
+        parameters=[{
+            'left_range_topic': '/robocop/ds_left',
+            'right_range_topic': '/robocop/ds_right',
+            'left_frame_id': 'tof_left',
+            'right_frame_id': 'tof_right',
+            'publish_rate_hz': 10.0,
+            'left_xshut_pin': 'D17',
+            'right_xshut_pin': 'D27',
+            'left_i2c_address': 0x30,
+            'right_i2c_address': 0x29,
+        }]
+    )
+
+    task2_with_arm = Node(
+        package='robocop_pkg',
+        executable='task2_with_arm',   # must match setup.py entry point
+        name='task2_with_arm',
+        output='screen',
+    
+    )
+
+    task3 = Node(
+        package='robocop_pkg',
+        executable='task3',   # must match setup.py entry point
+        name='task3',
+        output='screen',
+    
     )
 
     return LaunchDescription([
-        mode_arg,
-        behavior_arg,
-
-        webots,
-        webots._supervisor,   # required when ros2_supervisor=True
-
-        my_robot_driver,
-
-        white_line_follower,
-        red_box_seeker,
-
-        RegisterEventHandler(
-            event_handler=OnProcessExit(
-                target_action=webots,
-                on_exit=[EmitEvent(event=Shutdown())],
-            )
-        )
+        camera_feed_node,
+        tof_dual_node,
+        robot_arm_action_server,
+        cmd_vel_stepper_node,
+        # task2_with_arm,
+        task3,
+        # task_masnager,
     ])

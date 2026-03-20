@@ -153,12 +153,12 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        mode_arg,
+        # mode_arg,
 
-        webots,
-        webots._supervisor,   # ✅ REQUIRED when ros2_supervisor=True
+        # webots,
+        # webots._supervisor,   # ✅ REQUIRED when ros2_supervisor=True
 
-        my_robot_driver,
+        # my_robot_driver,
         # white_line_follower,
         # perspective_rectifier,
         # red_box_perpendicular_seeker,

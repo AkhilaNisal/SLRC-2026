@@ -17,7 +17,7 @@ class StepperControlNode(Node):
         # =========================
         # ROS parameters
         # =========================
-        self.declare_parameter('wheel_radius', 0.065)              # meters
+        self.declare_parameter('wheel_radius', 0.0325)              # meters
         self.declare_parameter('wheel_base', 0.20)                 # meters
         self.declare_parameter('steps_per_rev', 200)               # full steps/rev of motor
         self.declare_parameter('microsteps', 16)                   # 1,2,4,8,16 (match A4988 switches)
