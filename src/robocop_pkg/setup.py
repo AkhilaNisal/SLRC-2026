@@ -54,7 +54,7 @@ setup(
             'robot_arm_action_server = robocop_pkg.robot_arm_action_server:main',
             'task3 = robocop_pkg.task3:main',
             'task_manager = robocop_pkg.task_manager:main',
-
+            'servo_node = robocop_pkg.servo_node:main',
 
         ],
     },

@@ -6,7 +6,8 @@
 
             <!-- <plugin>arduino_arm_hardware::ArduinoArmHardwareInterface</plugin>
                 <param name="port">/dev/ttyACM0</param> -->
-                <plugin>mock_components/GenericSystem</plugin>
+                    <plugin>arm_hardware/ArmHardwareInterface</plugin>
+                <!-- <plugin>mock_components/GenericSystem</plugin> -->
             </hardware>
 
 

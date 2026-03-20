@@ -8,12 +8,13 @@
   <license>Apache-2.0</license>
 
   <depend>robot_arm_interfaces</depend>
-
+  <depend>std_msgs</depend>
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
   <depend>webots_ros2_driver</depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
+
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
