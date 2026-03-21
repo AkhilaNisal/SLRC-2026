@@ -3,8 +3,6 @@
 # starting from:     translation 1.2 1 0
 #                      rotation 0 0 1 1.57
 
-
-
 import cv2
 import numpy as np
 import rclpy
@@ -20,7 +18,6 @@ from std_msgs.msg import String
 from robot_arm_interfaces.action import PickBox
 
 
-
 class Task3Node(Node):
     def __init__(self):
         super().__init__('task3')
@@ -30,7 +27,7 @@ class Task3Node(Node):
         # =========================
         self.declare_parameter('image_topic', '/camera/image/image_color')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('front_range_topic', '/robocop/ds_front')
+        self.declare_parameter('front_range_topic', '/robocop/ds_right')#******************
         self.declare_parameter('task3_status_topic', '/task3/status')
 
         # =========================
@@ -42,7 +39,7 @@ class Task3Node(Node):
         # =========================
         # Motion
         # =========================
-        self.declare_parameter('linear_speed', 0.14)
+        self.declare_parameter('linear_speed', 0.08)
         self.declare_parameter('search_linear', 0.04)
         self.declare_parameter('search_angular', 0.30)
 
@@ -50,14 +47,11 @@ class Task3Node(Node):
         self.declare_parameter('max_angular_line', 1.2)
 
         self.declare_parameter('turn_left_angular_speed', 0.8)
-        self.declare_parameter('turn_left_90_time', 2.25)
+        self.declare_parameter('turn_left_90_time', 2.35)
         self.declare_parameter('post_turn_wait_time', 0.8)
 
-        self.declare_parameter('initial_forward_distance', 0.50)
-        self.declare_parameter('initial_forward_speed', 0.12)
-
-        self.declare_parameter('junction_turn_speed', 0.8)
-        self.declare_parameter('junction_turn_90_time', 2.25)
+        self.declare_parameter('junction_turn_speed', 0.75)
+        self.declare_parameter('junction_turn_90_time', 2.35)
         self.declare_parameter('junction_confirm_frames', 4)
 
         self.declare_parameter('pre_turn_distance', 0.3)
@@ -66,8 +60,12 @@ class Task3Node(Node):
         # =========================
         # White line detection
         # =========================
-        self.declare_parameter('roi_y_start', 0.9)
+        # Main follow ROI: center/lower vertical region
+        self.declare_parameter('follow_roi_y_start', 0.55)
+        self.declare_parameter('follow_roi_x_min_ratio', 0.15)
+        self.declare_parameter('follow_roi_x_max_ratio', 0.85)
         self.declare_parameter('min_area', 5000)
+        self.declare_parameter('startup_line_detect_min_area', 2500)
 
         self.declare_parameter('h_low', 0)
         self.declare_parameter('s_low', 0)
@@ -83,6 +81,8 @@ class Task3Node(Node):
         self.declare_parameter('side_roi_x_ratio', 0.34)
         self.declare_parameter('bottom_strip_height_ratio', 0.15)
         self.declare_parameter('bottom_branch_min_area', 2000)
+        self.declare_parameter('target_branch_index', 2)
+        self.declare_parameter('require_main_line_for_branch', True)
 
         # =========================
         # Marker detection
@@ -154,13 +154,6 @@ class Task3Node(Node):
         self.turn_left_90_time = float(self.get_parameter('turn_left_90_time').value)
         self.post_turn_wait_time = float(self.get_parameter('post_turn_wait_time').value)
 
-        self.initial_forward_distance = float(self.get_parameter('initial_forward_distance').value)
-        self.initial_forward_speed = float(self.get_parameter('initial_forward_speed').value)
-        self.initial_forward_time = (
-            self.initial_forward_distance / self.initial_forward_speed
-            if self.initial_forward_speed > 1e-6 else 0.0
-        )
-
         self.junction_turn_speed = float(self.get_parameter('junction_turn_speed').value)
         self.junction_turn_90_time = float(self.get_parameter('junction_turn_90_time').value)
         self.junction_confirm_frames = int(self.get_parameter('junction_confirm_frames').value)
@@ -172,8 +165,11 @@ class Task3Node(Node):
             if self.pre_turn_speed > 1e-6 else 0.0
         )
 
-        self.roi_y_start = float(self.get_parameter('roi_y_start').value)
+        self.follow_roi_y_start = float(self.get_parameter('follow_roi_y_start').value)
+        self.follow_roi_x_min_ratio = float(self.get_parameter('follow_roi_x_min_ratio').value)
+        self.follow_roi_x_max_ratio = float(self.get_parameter('follow_roi_x_max_ratio').value)
         self.min_area = int(self.get_parameter('min_area').value)
+        self.startup_line_detect_min_area = int(self.get_parameter('startup_line_detect_min_area').value)
 
         self.h_low = int(self.get_parameter('h_low').value)
         self.s_low = int(self.get_parameter('s_low').value)
@@ -186,6 +182,8 @@ class Task3Node(Node):
         self.side_roi_x_ratio = float(self.get_parameter('side_roi_x_ratio').value)
         self.bottom_strip_height_ratio = float(self.get_parameter('bottom_strip_height_ratio').value)
         self.bottom_branch_min_area = int(self.get_parameter('bottom_branch_min_area').value)
+        self.target_branch_index = int(self.get_parameter('target_branch_index').value)
+        self.require_main_line_for_branch = bool(self.get_parameter('require_main_line_for_branch').value)
 
         self.detect_marker_after_branch = bool(self.get_parameter('detect_marker_after_branch').value)
         self.marker_confirm_frames = int(self.get_parameter('marker_confirm_frames').value)
@@ -228,6 +226,10 @@ class Task3Node(Node):
             self.branch_side = 'LEFT'
             self.get_logger().warn("Invalid branch_side. Using LEFT.")
 
+        if self.target_branch_index < 1:
+            self.target_branch_index = 1
+            self.get_logger().warn("target_branch_index must be >= 1. Using 1.")
+
         # =========================
         # ROS interfaces
         # =========================
@@ -249,7 +251,7 @@ class Task3Node(Node):
         # =========================
         self.STATE_INITIAL_TURN = 'INITIAL_TURN'
         self.STATE_INITIAL_WAIT = 'INITIAL_WAIT'
-        self.STATE_INITIAL_FORWARD = 'INITIAL_FORWARD'
+        self.STATE_FIND_LINE_AFTER_INITIAL_TURN = 'FIND_LINE_AFTER_INITIAL_TURN'
         self.STATE_FOLLOW_LINE_TO_BRANCH = 'FOLLOW_LINE_TO_BRANCH'
         self.STATE_MOVE_FORWARD_BEFORE_TURN = 'MOVE_FORWARD_BEFORE_TURN'
         self.STATE_TURN_AT_BRANCH = 'TURN_AT_BRANCH'
@@ -266,11 +268,12 @@ class Task3Node(Node):
         self.state = self.STATE_INITIAL_TURN
         self.turn_start_time = None
         self.wait_start_time = None
-        self.forward_start_time = None
         self.pre_turn_start_time = None
         self.initial_turn_started = False
 
         self.side_branch_counter = 0
+        self.branch_count = 0
+        self.branch_currently_visible = False
         self.marker_seen_counter = 0
 
         self.front_range = None
@@ -295,15 +298,15 @@ class Task3Node(Node):
         self.last_log_time = self.get_clock().now()
 
         cv2.namedWindow("task3_camera", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("task3_white_mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("task3_side_mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("task3_green_mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("task3_blue_mask", cv2.WINDOW_NORMAL)
+        # cv2.namedWindow("task3_follow_mask", cv2.WINDOW_NORMAL)
+        # cv2.namedWindow("task3_side_mask", cv2.WINDOW_NORMAL)
+        # cv2.namedWindow("task3_green_mask", cv2.WINDOW_NORMAL)
+        # cv2.namedWindow("task3_blue_mask", cv2.WINDOW_NORMAL)
 
         self.get_logger().info(
             f"Task 3 started. Branch side: {self.branch_side}. "
-            f"After branch turn, robot detects marker using green or blue circular pairs, "
-            f"stops with front sensor, then sends RESTORE action."
+            f"Uses center/lower ROI for main line following, bottom side strip for branch counting, "
+            f"turns at branch #{self.target_branch_index}, then detects marker and stops with front sensor."
         )
 
     @staticmethod
@@ -483,10 +486,11 @@ class Task3Node(Node):
 
         return marker_found, marker_center, marker_mode, green_mask, blue_mask, (blue_x0, blue_y0, blue_x1, blue_y1)
 
-    def follow_line(self, area, moments, frame_width, twist):
+    def follow_line(self, area, moments, frame_center_x, twist, x_offset=0):
         if area > self.min_area:
-            cx = int(moments["m10"] / area)
-            error = float(cx - (frame_width // 2))
+            cx_local = int(moments["m10"] / area)
+            cx = x_offset + cx_local
+            error = float(cx - frame_center_x)
             ang = -self.kp_line * error
             ang = self.clamp(ang, -self.max_angular_line, self.max_angular_line)
 
@@ -593,12 +597,25 @@ class Task3Node(Node):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         h, w = frame.shape[:2]
 
-        y0 = int(h * self.roi_y_start)
-        roi = frame[y0:h, 0:w]
-        white_mask = self.build_white_mask(roi)
-        M = cv2.moments(white_mask)
+        # =========================
+        # Main follow ROI: center/lower vertical region
+        # =========================
+        fy0 = int(h * self.follow_roi_y_start)
+        fx0 = int(w * self.follow_roi_x_min_ratio)
+        fx1 = int(w * self.follow_roi_x_max_ratio)
+
+        fy0 = max(0, min(fy0, h - 1))
+        fx0 = max(0, min(fx0, w - 1))
+        fx1 = max(fx0 + 1, min(fx1, w))
+
+        follow_roi = frame[fy0:h, fx0:fx1]
+        follow_mask = self.build_white_mask(follow_roi)
+        M = cv2.moments(follow_mask)
         area = M["m00"]
 
+        # =========================
+        # Bottom strip for side branch detection
+        # =========================
         bh = int(h * self.bottom_strip_height_ratio)
         by0 = max(0, h - bh)
         bottom_roi = frame[by0:h, 0:w]
@@ -650,40 +667,58 @@ class Task3Node(Node):
 
             elapsed = (self.get_clock().now() - self.wait_start_time).nanoseconds / 1e9
             if elapsed >= self.post_turn_wait_time:
-                self.state = self.STATE_INITIAL_FORWARD
-                self.forward_start_time = self.get_clock().now()
-                self.get_logger().info(
-                    f"Moving forward {self.initial_forward_distance:.2f} m before line follow."
-                )
+                self.state = self.STATE_FIND_LINE_AFTER_INITIAL_TURN
+                self.get_logger().info("Searching for straight white line in center/lower follow ROI.")
 
-        elif self.state == self.STATE_INITIAL_FORWARD:
-            twist.linear.x = self.initial_forward_speed
-            twist.angular.z = 0.0
-
-            elapsed = (self.get_clock().now() - self.forward_start_time).nanoseconds / 1e9
-            if elapsed >= self.initial_forward_time:
+        elif self.state == self.STATE_FIND_LINE_AFTER_INITIAL_TURN:
+            if area > self.startup_line_detect_min_area:
                 twist.linear.x = 0.0
                 twist.angular.z = 0.0
                 self.state = self.STATE_FOLLOW_LINE_TO_BRANCH
                 self.side_branch_counter = 0
-                self.get_logger().info("Initial forward move complete. Starting line follow.")
+                self.branch_count = 0
+                self.branch_currently_visible = False
+                self.get_logger().info(
+                    f"Straight line detected. Starting line follow. follow_area={int(area)}"
+                )
+            else:
+                twist.linear.x = 0.0
+                twist.angular.z = self.search_angular
 
         elif self.state == self.STATE_FOLLOW_LINE_TO_BRANCH:
-            self.follow_line(area, M, w, twist)
+            self.follow_line(area, M, w // 2, twist, x_offset=fx0)
+
+            main_line_visible = area > self.min_area
 
             if side_area > self.bottom_branch_min_area:
                 self.side_branch_counter += 1
             else:
                 self.side_branch_counter = 0
 
-            if self.side_branch_counter >= self.junction_confirm_frames:
-                self.state = self.STATE_MOVE_FORWARD_BEFORE_TURN
-                self.pre_turn_start_time = self.get_clock().now()
-                twist.linear.x = 0.0
-                twist.angular.z = 0.0
+            stable_branch_visible = self.side_branch_counter >= self.junction_confirm_frames
+
+            if self.require_main_line_for_branch:
+                stable_branch_visible = stable_branch_visible and main_line_visible
+
+            if stable_branch_visible and not self.branch_currently_visible:
+                self.branch_currently_visible = True
+                self.branch_count += 1
                 self.get_logger().info(
-                    f"{self.branch_side} branch detected. Moving forward {self.pre_turn_distance:.2f} m before turn."
+                    f"Detected side branch event #{self.branch_count} on {self.branch_side}"
                 )
+
+                if self.branch_count >= self.target_branch_index:
+                    self.state = self.STATE_MOVE_FORWARD_BEFORE_TURN
+                    self.pre_turn_start_time = self.get_clock().now()
+                    twist.linear.x = 0.0
+                    twist.angular.z = 0.0
+                    self.get_logger().info(
+                        f"Target branch #{self.branch_count} reached. "
+                        f"Moving forward {self.pre_turn_distance:.2f} m before turn."
+                    )
+
+            elif not stable_branch_visible:
+                self.branch_currently_visible = False
 
         elif self.state == self.STATE_MOVE_FORWARD_BEFORE_TURN:
             twist.linear.x = self.pre_turn_speed
@@ -723,7 +758,7 @@ class Task3Node(Node):
                 self.get_logger().info("Following line after branch turn.")
 
         elif self.state == self.STATE_FOLLOW_LINE_AFTER_BRANCH:
-            self.follow_line(area, M, w, twist)
+            self.follow_line(area, M, w // 2, twist, x_offset=fx0)
 
             if self.detect_marker_after_branch and marker_found:
                 self.marker_seen_counter += 1
@@ -796,20 +831,26 @@ class Task3Node(Node):
 
         self.cmd_pub.publish(twist)
 
+        # =========================
+        # Visualization
+        # =========================
         vis = frame.copy()
 
-        cv2.rectangle(vis, (0, y0), (w - 1, h - 1), (0, 255, 0), 2)
+        # Follow ROI
+        cv2.rectangle(vis, (fx0, fy0), (fx1 - 1, h - 1), (0, 255, 0), 2)
         cv2.putText(
-            vis, "FOLLOW ROI", (10, max(25, y0 - 10)),
+            vis, "FOLLOW ROI", (fx0 + 5, max(25, fy0 - 10)),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
         )
 
+        # Branch ROI
         cv2.rectangle(vis, (side_x1, by0), (side_x2 - 1, h - 1), (255, 255, 0), 2)
         cv2.putText(
             vis, f"{self.branch_side} BOTTOM BRANCH ROI", (10, h - 20),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2
         )
 
+        # Blue ROI
         bx0, byy0, bx1, byy1 = blue_roi_box
         cv2.rectangle(vis, (bx0, byy0), (bx1 - 1, byy1 - 1), (255, 0, 0), 2)
         cv2.putText(
@@ -817,14 +858,17 @@ class Task3Node(Node):
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2
         )
 
+        # Follow centroid
         if area > self.min_area:
-            cx_vis = int(M["m10"] / area)
-            cy_vis = y0 + (h - y0) // 2
+            cx_vis = fx0 + int(M["m10"] / area)
+            cy_vis = fy0 + (h - fy0) // 2
             cv2.circle(vis, (cx_vis, cy_vis), 8, (0, 255, 255), -1)
 
+        # Center cross
         cv2.line(vis, (w // 2, 0), (w // 2, h - 1), (0, 0, 255), 1)
         cv2.line(vis, (0, h // 2), (w - 1, h // 2), (0, 0, 255), 1)
 
+        # Marker points
         for p in self.last_green_centers:
             cv2.circle(vis, p, 14, (0, 255, 0), 2)
             cv2.circle(vis, p, 3, (0, 255, 0), -1)
@@ -853,13 +897,19 @@ class Task3Node(Node):
         )
 
         cv2.putText(
-            vis, f"line_area={int(area)} side_area={int(side_area)}", (10, 60),
+            vis, f"follow_area={int(area)} side_area={int(side_area)}", (10, 60),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
         )
 
         cv2.putText(
-            vis, f"marker_found={marker_found} mode={marker_mode} counter={self.marker_seen_counter}",
+            vis, f"branch_count={self.branch_count} target={self.target_branch_index}",
             (10, 90),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.58, (180, 255, 180), 2
+        )
+
+        cv2.putText(
+            vis, f"marker_found={marker_found} mode={marker_mode} counter={self.marker_seen_counter}",
+            (10, 120),
             cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 220, 150), 2
         )
 
@@ -868,32 +918,32 @@ class Task3Node(Node):
             front_txt = f"front={self.front_range:.3f} m"
 
         cv2.putText(
-            vis, front_txt, (10, 120),
+            vis, front_txt, (10, 150),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 255, 150), 2
         )
 
         cv2.putText(
-            vis, f"cmd v={twist.linear.x:.2f} w={twist.angular.z:.2f}", (10, 150),
+            vis, f"cmd v={twist.linear.x:.2f} w={twist.angular.z:.2f}", (10, 180),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
         )
 
         if self.restore_goal_sent:
             cv2.putText(
                 vis, f"RESTORE sent | done={self.restore_goal_done} ok={self.restore_goal_success}",
-                (10, 180),
+                (10, 210),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2
             )
 
         if self.task3_done_published:
             cv2.putText(
                 vis, "TASK3 STATUS: DONE",
-                (10, 210),
+                (10, 240),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2
             )
 
         cv2.imshow("task3_camera", vis)
-        # cv2.imshow("task3_white_mask", white_mask)
-        cv2.imshow("task3_side_mask", side_mask)
+        # cv2.imshow("task3_follow_mask", follow_mask)
+        # cv2.imshow("task3_side_mask", side_mask)
         # cv2.imshow("task3_green_mask", green_mask)
         # cv2.imshow("task3_blue_mask", blue_mask)
 
@@ -911,7 +961,8 @@ class Task3Node(Node):
             self.last_log_time = now
             self.get_logger().info(
                 f"fps~{self.frame_count} state={self.state} "
-                f"line_area={int(area)} side_area={int(side_area)} "
+                f"follow_area={int(area)} side_area={int(side_area)} "
+                f"branch_count={self.branch_count}/{self.target_branch_index} "
                 f"marker_found={marker_found} mode={marker_mode} "
                 f"front={'NA' if not self.front_range_valid else f'{self.front_range:.3f}'} "
                 f"restore_sent={self.restore_goal_sent} "
