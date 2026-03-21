@@ -96,6 +96,24 @@ def generate_launch_description():
         output='screen',
     )
 
+    mpu_node = Node(
+        package='mpu6050_ros2',
+        executable='mpu6050_node',
+        name='mpu6050_node',
+        output='screen',
+        parameters=[
+            {
+                'i2c_bus': 1,
+                'i2c_address': 0x68,
+                'frame_id': 'imu_link',
+                'publish_rate': 50.0,
+                'stationary_gyro_threshold_dps': 0.8,
+                'stationary_accel_threshold_g': 0.08,
+                'yaw_bias_adapt_alpha': 0.001,
+            }
+        ]
+    )
+
     delayed_task_nodes = TimerAction(
         period=8.0,
         actions=[
@@ -106,6 +124,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        mpu_node,
         pca9685_bridge,
         moveit_demo,
         camera_feed_node,

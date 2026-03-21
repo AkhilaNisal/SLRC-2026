@@ -11,7 +11,7 @@ from rclpy.action import ActionClient
 
 from sensor_msgs.msg import Image, Range
 from geometry_msgs.msg import Twist
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32
 from cv_bridge import CvBridge
 
 import cv2
@@ -33,6 +33,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('right_range_topic', '/robocop/ds_right')
         self.declare_parameter('front_range_topic', '/robocop/ds_front')
         self.declare_parameter('task2_status_topic', '/task2/status')
+        self.declare_parameter('gyro_angle_topic', '/gyro_angle')
 
         # =========================
         # Motion control
@@ -43,13 +44,21 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('max_angular', 1.2)
 
         self.declare_parameter('extra_forward_distance', 0.3)
-
-        self.declare_parameter('turn_left_angular_speed', 0.8)
-        self.declare_parameter('turn_left_90_time', 3.0)
         self.declare_parameter('post_turn_wait_time', 1.0)
 
         self.declare_parameter('search_linear', 0.04)
         self.declare_parameter('search_angular', 0.35)
+
+        # =========================
+        # Gyro turning control
+        # =========================
+        self.declare_parameter('turn_angle_90_deg', 90.0)
+        self.declare_parameter('turn_angle_180_deg', 180.0)
+        self.declare_parameter('turn_tolerance_deg', 3.0)
+        self.declare_parameter('turn_kp', 0.018)
+        self.declare_parameter('turn_min_speed', 0.22)
+        self.declare_parameter('turn_max_speed', 0.9)
+        self.declare_parameter('turn_timeout_sec', 6.0)
 
         # =========================
         # White detection
@@ -73,41 +82,39 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         self.declare_parameter('red_h1_low', 0)
         self.declare_parameter('red_h1_high', 12)
-
         self.declare_parameter('red_h2_low', 165)
         self.declare_parameter('red_h2_high', 180)
-
         self.declare_parameter('red_s_low', 70)
         self.declare_parameter('red_v_low', 40)
-        self.declare_parameter('red_min_area', 600)
+        self.declare_parameter('red_min_area', 200)
+
+        # red centering while approaching
         self.declare_parameter('red_kp', 0.0045)
         self.declare_parameter('red_max_angular', 1.0)
-        self.declare_parameter('red_forward_speed', 0.08)
         self.declare_parameter('red_search_angular', 0.35)
-        self.declare_parameter('red_stop_area', 18000)
         self.declare_parameter('red_lost_frames_limit', 12)
 
         # =========================
         # Distance sensing / filter
         # =========================
-        self.declare_parameter('range_filter_alpha', 0.2)
+        self.declare_parameter('range_filter_alpha', 0.1)
         self.declare_parameter('print_distances_every_frame', False)
 
         # =========================
         # Box detection while following line
         # =========================
-        self.declare_parameter('box_detect_distance', 0.50)
+        self.declare_parameter('box_detect_distance', 0.54)
         self.declare_parameter('box_detect_frames', 4)
- 
+
         # =========================
         # Box visit maneuver
         # =========================
-        self.declare_parameter('box_turn_angular_speed', 0.8)
-        self.declare_parameter('box_turn_90_time', 3.0)
-        self.declare_parameter('box_turn_180_time', 6.0)
-        self.declare_parameter('box_stop_distance', 0.18)
-        self.declare_parameter('box_stop_frames', 5)
+        self.declare_parameter('box_approach_speed', 0.08)
+        self.declare_parameter('box_stop_distance', 0.05)          # kept for compatibility
+        self.declare_parameter('box_front_stop_distance', 0.20)    # actual stop distance
+        self.declare_parameter('box_stop_frames', 10)
         self.declare_parameter('box_return_speed', 0.12)
+        self.declare_parameter('box_drive_timeout_sec', 8.0)
 
         # =========================
         # Action client / pickup behavior
@@ -133,6 +140,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.right_range_topic = self.get_parameter('right_range_topic').value
         self.front_range_topic = self.get_parameter('front_range_topic').value
         self.task2_status_topic = self.get_parameter('task2_status_topic').value
+        self.gyro_angle_topic = self.get_parameter('gyro_angle_topic').value
 
         self.forward_speed = float(self.get_parameter('forward_speed').value)
         self.linear_speed = float(self.get_parameter('linear_speed').value)
@@ -145,12 +153,18 @@ class WhiteLineFollowerWithBoxVisit(Node):
             if self.forward_speed > 1e-6 else 0.0
         )
 
-        self.turn_left_angular_speed = float(self.get_parameter('turn_left_angular_speed').value)
-        self.turn_left_90_time = float(self.get_parameter('turn_left_90_time').value)
         self.post_turn_wait_time = float(self.get_parameter('post_turn_wait_time').value)
 
         self.search_linear = float(self.get_parameter('search_linear').value)
         self.search_angular = float(self.get_parameter('search_angular').value)
+
+        self.turn_angle_90_deg = float(self.get_parameter('turn_angle_90_deg').value)
+        self.turn_angle_180_deg = float(self.get_parameter('turn_angle_180_deg').value)
+        self.turn_tolerance_deg = float(self.get_parameter('turn_tolerance_deg').value)
+        self.turn_kp = float(self.get_parameter('turn_kp').value)
+        self.turn_min_speed = float(self.get_parameter('turn_min_speed').value)
+        self.turn_max_speed = float(self.get_parameter('turn_max_speed').value)
+        self.turn_timeout_sec = float(self.get_parameter('turn_timeout_sec').value)
 
         self.roi_y_start = float(self.get_parameter('roi_y_start').value)
         self.min_area = int(self.get_parameter('min_area').value)
@@ -175,9 +189,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.red_min_area = int(self.get_parameter('red_min_area').value)
         self.red_kp = float(self.get_parameter('red_kp').value)
         self.red_max_angular = float(self.get_parameter('red_max_angular').value)
-        self.red_forward_speed = float(self.get_parameter('red_forward_speed').value)
         self.red_search_angular = float(self.get_parameter('red_search_angular').value)
-        self.red_stop_area = int(self.get_parameter('red_stop_area').value)
         self.red_lost_frames_limit = int(self.get_parameter('red_lost_frames_limit').value)
 
         self.range_filter_alpha = float(self.get_parameter('range_filter_alpha').value)
@@ -188,12 +200,12 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.box_detect_distance = float(self.get_parameter('box_detect_distance').value)
         self.box_detect_frames = int(self.get_parameter('box_detect_frames').value)
 
-        self.box_turn_angular_speed = float(self.get_parameter('box_turn_angular_speed').value)
-        self.box_turn_90_time = float(self.get_parameter('box_turn_90_time').value)
-        self.box_turn_180_time = float(self.get_parameter('box_turn_180_time').value)
+        self.box_approach_speed = float(self.get_parameter('box_approach_speed').value)
         self.box_stop_distance = float(self.get_parameter('box_stop_distance').value)
+        self.box_front_stop_distance = float(self.get_parameter('box_front_stop_distance').value)
         self.box_stop_frames = int(self.get_parameter('box_stop_frames').value)
         self.box_return_speed = float(self.get_parameter('box_return_speed').value)
+        self.box_drive_timeout_sec = float(self.get_parameter('box_drive_timeout_sec').value)
 
         self.pick_action_name = str(self.get_parameter('pick_action_name').value)
         self.pick_retry_limit = int(self.get_parameter('pick_retry_limit').value)
@@ -204,9 +216,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.task2_finish_wall_frames = int(self.get_parameter('task2_finish_wall_frames').value)
         self.task2_finish_forward_speed = float(self.get_parameter('task2_finish_forward_speed').value)
 
-        # =========================
         # ROS interfaces
-        # =========================
         self.bridge = CvBridge()
 
         self.image_sub = self.create_subscription(
@@ -221,6 +231,9 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.front_range_sub = self.create_subscription(
             Range, self.front_range_topic, self.front_range_cb, qos_profile_sensor_data
         )
+        self.gyro_angle_sub = self.create_subscription(
+            Float32, self.gyro_angle_topic, self.gyro_angle_cb, qos_profile_sensor_data
+        )
 
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.task_status_pub = self.create_publisher(String, self.task2_status_topic, 10)
@@ -230,9 +243,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.pick_server_ready_logged = False
         self.server_check_timer = self.create_timer(0.5, self.check_pick_server)
 
-        # =========================
         # States
-        # =========================
         self.STATE_LINE_CROSS_APPROACH = 'LINE_CROSS_APPROACH'
         self.STATE_LINE_CROSS_WAIT_DISAPPEAR = 'LINE_CROSS_WAIT_DISAPPEAR'
         self.STATE_LINE_CROSS_EXTRA_FORWARD = 'LINE_CROSS_EXTRA_FORWARD'
@@ -259,17 +270,25 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.line_seen = False
         self.line_gone_counter = 0
         self.extra_forward_start_time = None
-        self.turn_start_time = None
         self.post_turn_wait_start_time = None
         self.line_cross_speed = self.forward_speed
+
+        # gyro turn state
+        self.current_yaw_deg = None
+        self.gyro_ready = False
+        self.turn_active = False
+        self.turn_target_deg = None
+        self.turn_next_state = None
+        self.turn_start_time = None
 
         # box visit state
         self.active_box_side = None
         self.box_stop_counter = 0
         self.left_box_count = 0
         self.right_box_count = 0
-        self.red_lost_counter = 0
         self.boxes_completed = 0
+        self.box_drive_start_time = None
+        self.red_lost_counter = 0
 
         # action state
         self.pick_goal_sent = False
@@ -303,9 +322,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.last_log_time = self.get_clock().now()
 
         cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
-        # cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
-        # cv2.namedWindow("bottom_mask", cv2.WINDOW_NORMAL)
-        # cv2.namedWindow("red_mask", cv2.WINDOW_NORMAL)
 
         self.configure_line_cross_sequence(
             speed=self.forward_speed,
@@ -313,7 +329,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
             next_state=self.STATE_FOLLOW_LINE
         )
 
-        self.get_logger().info("Started task2_with_arm with front-wall finish logic.")
+        self.get_logger().info("Started task2_with_arm with red-centering and front-distance stop.")
 
     @staticmethod
     def clamp(x: float, lo: float, hi: float) -> float:
@@ -326,6 +342,18 @@ class WhiteLineFollowerWithBoxVisit(Node):
         if math.isnan(x):
             return "nan"
         return f"{x:.3f}"
+
+    @staticmethod
+    def normalize_angle_deg(angle: float) -> float:
+        while angle > 180.0:
+            angle -= 360.0
+        while angle < -180.0:
+            angle += 360.0
+        return angle
+
+    @classmethod
+    def angle_diff_deg(cls, target: float, current: float) -> float:
+        return cls.normalize_angle_deg(target - current)
 
     def valid_range(self, x: float) -> bool:
         return not math.isinf(x) and not math.isnan(x) and x > 0.0
@@ -362,6 +390,10 @@ class WhiteLineFollowerWithBoxVisit(Node):
         raw = float(msg.range)
         self.front_range_raw = raw
         self.front_range = self.low_pass_filter(self.front_range, raw, self.range_filter_alpha)
+
+    def gyro_angle_cb(self, msg: Float32):
+        self.current_yaw_deg = self.normalize_angle_deg(float(msg.data))
+        self.gyro_ready = True
 
     def build_white_mask(self, bgr_img):
         hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
@@ -466,14 +498,19 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.line_seen = False
         self.line_gone_counter = 0
         self.extra_forward_start_time = None
-        self.turn_start_time = None
         self.post_turn_wait_start_time = None
+        self.turn_active = False
+        self.turn_target_deg = None
+        self.turn_next_state = None
+        self.turn_start_time = None
         self.state = self.STATE_LINE_CROSS_APPROACH
 
     def start_box_detour(self, side: str):
         self.active_box_side = side
         self.box_stop_counter = 0
+        self.box_drive_start_time = None
         self.red_lost_counter = 0
+
         self.pick_goal_sent = False
         self.pick_in_progress = False
         self.pick_result_ready = False
@@ -491,9 +528,14 @@ class WhiteLineFollowerWithBoxVisit(Node):
             self.right_box_count += 1
             count = self.right_box_count
 
-        self.state = self.STATE_BOX_TURN_TO_BOX
-        self.turn_start_time = self.get_clock().now()
-        self.get_logger().info(f"{side} box detected. count={count}. Starting detour toward box.")
+        if self.start_relative_turn(
+            self.side_sign(side) * self.turn_angle_90_deg,
+            self.STATE_BOX_TURN_TO_BOX,
+            self.STATE_BOX_DRIVE_TO_BOX
+        ):
+            self.get_logger().info(
+                f"{side} box detected. count={count}. Starting gyro turn toward box."
+            )
 
     def stop_robot(self):
         self.cmd_pub.publish(Twist())
@@ -506,6 +548,108 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.task_status_pub.publish(msg)
         self.task2_done_published = True
         self.get_logger().info("Published Task 2 DONE status.")
+
+    def start_relative_turn(self, delta_deg: float, turn_state: str, next_state: str) -> bool:
+        if not self.gyro_ready or self.current_yaw_deg is None:
+            self.get_logger().warn("Gyro angle not ready yet. Waiting before turn.")
+            self.state = turn_state
+            self.turn_active = False
+            self.turn_next_state = next_state
+            return False
+
+        self.turn_target_deg = self.normalize_angle_deg(self.current_yaw_deg + delta_deg)
+        self.turn_next_state = next_state
+        self.turn_start_time = self.get_clock().now()
+        self.turn_active = True
+        self.state = turn_state
+
+        self.get_logger().info(
+            f"Starting turn: current={self.current_yaw_deg:.2f} deg, "
+            f"delta={delta_deg:.2f} deg, target={self.turn_target_deg:.2f} deg, "
+            f"next_state={next_state}"
+        )
+        return True
+
+    def execute_gyro_turn(self, twist: Twist):
+        twist.linear.x = 0.0
+        twist.angular.z = 0.0
+
+        if not self.gyro_ready or self.current_yaw_deg is None:
+            return
+
+        if not self.turn_active:
+            if self.state == self.STATE_LINE_CROSS_TURN:
+                self.start_relative_turn(
+                    self.line_cross_turn_direction * self.turn_angle_90_deg,
+                    self.STATE_LINE_CROSS_TURN,
+                    self.STATE_LINE_CROSS_POST_WAIT
+                )
+            elif self.state == self.STATE_BOX_TURN_TO_BOX:
+                self.start_relative_turn(
+                    self.side_sign(self.active_box_side) * self.turn_angle_90_deg,
+                    self.STATE_BOX_TURN_TO_BOX,
+                    self.STATE_BOX_DRIVE_TO_BOX
+                )
+            elif self.state == self.STATE_BOX_TURN_BACK_180:
+                self.start_relative_turn(
+                    self.side_sign(self.active_box_side) * self.turn_angle_180_deg,
+                    self.STATE_BOX_TURN_BACK_180,
+                    self.STATE_BOX_RETURN_TO_LINE
+                )
+            return
+
+        error_deg = self.angle_diff_deg(self.turn_target_deg, self.current_yaw_deg)
+
+        if abs(error_deg) <= self.turn_tolerance_deg:
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
+            self.turn_active = False
+
+            if self.state == self.STATE_LINE_CROSS_TURN:
+                self.state = self.STATE_LINE_CROSS_POST_WAIT
+                self.post_turn_wait_start_time = self.get_clock().now()
+                self.get_logger().info(
+                    f"Line-cross turn complete at yaw={self.current_yaw_deg:.2f} deg. "
+                    f"Waiting {self.post_turn_wait_time:.2f}s."
+                )
+            else:
+                self.state = self.turn_next_state
+                if self.state == self.STATE_BOX_DRIVE_TO_BOX:
+                    self.box_stop_counter = 0
+                    self.box_drive_start_time = self.get_clock().now()
+                    self.red_lost_counter = 0
+                    self.get_logger().info(
+                        f"Turned toward {self.active_box_side} box. Centering red box, stopping by front distance sensor."
+                    )
+                elif self.state == self.STATE_BOX_RETURN_TO_LINE:
+                    self.get_logger().info("Turned back 180. Returning to white line.")
+            return
+
+        elapsed = (self.get_clock().now() - self.turn_start_time).nanoseconds / 1e9
+        if elapsed >= self.turn_timeout_sec:
+            self.get_logger().warn(
+                f"Turn timeout. current={self.current_yaw_deg:.2f} target={self.turn_target_deg:.2f} "
+                f"error={error_deg:.2f}. Forcing next state."
+            )
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
+            self.turn_active = False
+
+            if self.state == self.STATE_LINE_CROSS_TURN:
+                self.state = self.STATE_LINE_CROSS_POST_WAIT
+                self.post_turn_wait_start_time = self.get_clock().now()
+            else:
+                self.state = self.turn_next_state
+                if self.state == self.STATE_BOX_DRIVE_TO_BOX:
+                    self.box_drive_start_time = self.get_clock().now()
+                    self.red_lost_counter = 0
+            return
+
+        speed = self.turn_kp * abs(error_deg)
+        speed = self.clamp(speed, self.turn_min_speed, self.turn_max_speed)
+
+        twist.linear.x = 0.0
+        twist.angular.z = speed if error_deg > 0.0 else -speed
 
     def run_line_cross_sequence(self, bottom_area: float, twist: Twist):
         if self.state == self.STATE_LINE_CROSS_APPROACH:
@@ -540,21 +684,14 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
             elapsed = (self.get_clock().now() - self.extra_forward_start_time).nanoseconds / 1e9
             if elapsed >= self.extra_forward_time:
-                self.state = self.STATE_LINE_CROSS_TURN
-                self.turn_start_time = self.get_clock().now()
-                self.get_logger().info("Extra forward done. Starting turn.")
+                self.start_relative_turn(
+                    self.line_cross_turn_direction * self.turn_angle_90_deg,
+                    self.STATE_LINE_CROSS_TURN,
+                    self.STATE_LINE_CROSS_POST_WAIT
+                )
 
         elif self.state == self.STATE_LINE_CROSS_TURN:
-            twist.linear.x = 0.0
-            twist.angular.z = self.line_cross_turn_direction * self.turn_left_angular_speed
-
-            elapsed = (self.get_clock().now() - self.turn_start_time).nanoseconds / 1e9
-            if elapsed >= self.turn_left_90_time:
-                self.state = self.STATE_LINE_CROSS_POST_WAIT
-                self.post_turn_wait_start_time = self.get_clock().now()
-                self.get_logger().info(
-                    f"Turn complete. Waiting {self.post_turn_wait_time:.2f}s."
-                )
+            self.execute_gyro_turn(twist)
 
         elif self.state == self.STATE_LINE_CROSS_POST_WAIT:
             twist.linear.x = 0.0
@@ -707,7 +844,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
             self.run_line_cross_sequence(bottom_area, twist)
 
         elif self.state == self.STATE_FOLLOW_LINE:
-            # After all boxes are complete, prioritize final wall stopping.
             if self.boxes_completed >= self.target_box_count:
                 twist.linear.x = self.task2_finish_forward_speed
                 twist.angular.z = 0.0
@@ -743,45 +879,20 @@ class WhiteLineFollowerWithBoxVisit(Node):
                     self.start_box_detour(side)
 
         elif self.state == self.STATE_BOX_TURN_TO_BOX:
-            twist.linear.x = 0.0
-            twist.angular.z = self.side_sign(self.active_box_side) * self.box_turn_angular_speed
-
-            elapsed = (self.get_clock().now() - self.turn_start_time).nanoseconds / 1e9
-            if elapsed >= self.box_turn_90_time:
-                self.state = self.STATE_BOX_DRIVE_TO_BOX
-                self.box_stop_counter = 0
-                self.red_lost_counter = 0
-                self.get_logger().info(f"Turned toward {self.active_box_side} box. Tracking red box.")
+            self.execute_gyro_turn(twist)
 
         elif self.state == self.STATE_BOX_DRIVE_TO_BOX:
+            side_dist = self.current_side_range()
+            front_dist = self.front_range
+            near_by_range = self.valid_range(front_dist) and front_dist <= self.box_front_stop_distance
+
             if red_found:
                 self.red_lost_counter = 0
-
                 error = float(red_cx - (w // 2))
                 ang = -self.red_kp * error
                 ang = self.clamp(ang, -self.red_max_angular, self.red_max_angular)
-
-                twist.linear.x = self.red_forward_speed
+                twist.linear.x = self.box_approach_speed
                 twist.angular.z = ang
-
-                side_dist = self.current_side_range()
-                near_by_range = self.valid_range(side_dist) and side_dist <= self.box_stop_distance
-                near_by_area = red_area >= self.red_stop_area
-
-                if near_by_range or near_by_area:
-                    self.box_stop_counter += 1
-                else:
-                    self.box_stop_counter = 0
-
-                if self.box_stop_counter >= self.box_stop_frames:
-                    twist.linear.x = 0.0
-                    twist.angular.z = 0.0
-                    self.state = self.STATE_BOX_REQUEST_PICK
-                    self.get_logger().info(
-                        f"Reached {self.active_box_side} red box. "
-                        f"range={self.fmt_range(side_dist)} area={int(red_area)}. "
-                        f"Stopping and requesting pick."
-                    )
             else:
                 self.red_lost_counter += 1
                 twist.linear.x = 0.0
@@ -789,6 +900,32 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
                 if self.red_lost_counter > self.red_lost_frames_limit:
                     self.get_logger().info("Red box lost. Rotating slowly to reacquire target.")
+
+            if near_by_range:
+                self.box_stop_counter += 1
+            else:
+                self.box_stop_counter = 0
+
+            if self.box_stop_counter >= self.box_stop_frames:
+                twist.linear.x = 0.0
+                twist.angular.z = 0.0
+                self.state = self.STATE_BOX_REQUEST_PICK
+                self.get_logger().info(
+                    f"Reached {self.active_box_side} box using front distance stop. "
+                    f"front={self.fmt_range(front_dist)} side={self.fmt_range(side_dist)}. "
+                    f"Stopping and requesting pick."
+                )
+            elif self.box_drive_start_time is not None:
+                elapsed = (self.get_clock().now() - self.box_drive_start_time).nanoseconds / 1e9
+                if elapsed >= self.box_drive_timeout_sec:
+                    twist.linear.x = 0.0
+                    twist.angular.z = 0.0
+                    self.state = self.STATE_BOX_REQUEST_PICK
+                    self.get_logger().warn(
+                        f"Box drive timeout. Proceeding to pick request anyway. "
+                        f"front={self.fmt_range(front_dist)} side={self.fmt_range(side_dist)} "
+                        f"active_box={self.active_box_side}"
+                    )
 
         elif self.state == self.STATE_BOX_REQUEST_PICK:
             twist.linear.x = 0.0
@@ -806,8 +943,11 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 if self.pick_result_success:
                     self.boxes_completed += 1
                     self.finish_wall_counter = 0
-                    self.state = self.STATE_BOX_TURN_BACK_180
-                    self.turn_start_time = self.get_clock().now()
+                    self.start_relative_turn(
+                        self.side_sign(self.active_box_side) * self.turn_angle_180_deg,
+                        self.STATE_BOX_TURN_BACK_180,
+                        self.STATE_BOX_RETURN_TO_LINE
+                    )
                     self.get_logger().info(
                         f"Pick success. boxes_completed={self.boxes_completed}. Turning back 180 degrees."
                     )
@@ -843,13 +983,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 twist.angular.z = 0.0
 
         elif self.state == self.STATE_BOX_TURN_BACK_180:
-            twist.linear.x = 0.0
-            twist.angular.z = self.side_sign(self.active_box_side) * self.box_turn_angular_speed
-
-            elapsed = (self.get_clock().now() - self.turn_start_time).nanoseconds / 1e9
-            if elapsed >= self.box_turn_180_time:
-                self.state = self.STATE_BOX_RETURN_TO_LINE
-                self.get_logger().info("Turned back 180. Returning to white line.")
+            self.execute_gyro_turn(twist)
 
         elif self.state == self.STATE_BOX_RETURN_TO_LINE:
             resume_turn_direction = self.side_sign(self.active_box_side)
@@ -878,6 +1012,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
         if self.print_distances_every_frame and self.measurement_started:
             self.get_logger().info(
                 f"STATE={self.state} "
+                f"yaw={self.current_yaw_deg if self.current_yaw_deg is not None else 'None'} "
+                f"turn_target={self.turn_target_deg if self.turn_target_deg is not None else 'None'} "
                 f"left_raw={self.fmt_range(self.left_range_raw)} left_f={self.fmt_range(self.left_range)} "
                 f"right_raw={self.fmt_range(self.right_range_raw)} right_f={self.fmt_range(self.right_range)} "
                 f"front_raw={self.fmt_range(self.front_range_raw)} front_f={self.fmt_range(self.front_range)} "
@@ -988,10 +1124,22 @@ class WhiteLineFollowerWithBoxVisit(Node):
             2
         )
 
+        yaw_txt = "None" if self.current_yaw_deg is None else f"{self.current_yaw_deg:.1f}"
+        tgt_txt = "None" if self.turn_target_deg is None else f"{self.turn_target_deg:.1f}"
+        cv2.putText(
+            vis,
+            f"yaw={yaw_txt} target={tgt_txt}",
+            (10, 305),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (200, 255, 255),
+            2
+        )
+
         cv2.putText(
             vis,
             f"cmd v={twist.linear.x:.2f} w={twist.angular.z:.2f}",
-            (10, 305),
+            (10, 335),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 255, 0),
@@ -999,9 +1147,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         )
 
         cv2.imshow("camera", vis)
-        # cv2.imshow("mask", mask)
-        # cv2.imshow("bottom_mask", bottom_mask)
-        # cv2.imshow("red_mask", red_mask)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -1017,6 +1162,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
             self.last_log_time = now
             self.get_logger().info(
                 f"fps~{self.frame_count} state={self.state} "
+                f"yaw={yaw_txt} target={tgt_txt} "
                 f"main_area={int(area)} bottom_area={int(bottom_area)} red_area={int(red_area)} "
                 f"left={self.display_range(self.left_range)} "
                 f"right={self.display_range(self.right_range)} "
