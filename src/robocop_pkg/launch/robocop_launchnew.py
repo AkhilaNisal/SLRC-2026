@@ -81,6 +81,14 @@ def generate_launch_description():
         output='screen',
     )
 
+    task2_with_arm = Node(
+        package='robocop_pkg',
+        executable='task2_with_arm',   # must match setup.py entry point
+        name='task2_with_arm',
+        output='screen',
+    
+    )
+
     task3 = Node(
         package='robocop_pkg',
         executable='task3',
@@ -92,7 +100,8 @@ def generate_launch_description():
         period=8.0,
         actions=[
             robot_arm_action_server,
-            task3,
+            # task3,
+            task2_with_arm,
         ]
     )
 

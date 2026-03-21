@@ -42,10 +42,10 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('kp', 0.004)
         self.declare_parameter('max_angular', 1.2)
 
-        self.declare_parameter('extra_forward_distance', 0.18)
+        self.declare_parameter('extra_forward_distance', 0.3)
 
         self.declare_parameter('turn_left_angular_speed', 0.8)
-        self.declare_parameter('turn_left_90_time', 2.25)
+        self.declare_parameter('turn_left_90_time', 3.0)
         self.declare_parameter('post_turn_wait_time', 1.0)
 
         self.declare_parameter('search_linear', 0.04)
@@ -97,14 +97,14 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # Box detection while following line
         # =========================
         self.declare_parameter('box_detect_distance', 0.50)
-        self.declare_parameter('box_detect_frames', 8)
+        self.declare_parameter('box_detect_frames', 4)
  
         # =========================
         # Box visit maneuver
         # =========================
         self.declare_parameter('box_turn_angular_speed', 0.8)
-        self.declare_parameter('box_turn_90_time', 2.25)
-        self.declare_parameter('box_turn_180_time', 4.75)
+        self.declare_parameter('box_turn_90_time', 3.0)
+        self.declare_parameter('box_turn_180_time', 6.0)
         self.declare_parameter('box_stop_distance', 0.18)
         self.declare_parameter('box_stop_frames', 5)
         self.declare_parameter('box_return_speed', 0.12)

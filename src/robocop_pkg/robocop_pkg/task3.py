@@ -129,7 +129,7 @@ class Task3Node(Node):
         self.declare_parameter('marker_search_angular', 0.25)
 
         # Front stop
-        self.declare_parameter('front_stop_distance', 0.18)
+        self.declare_parameter('front_stop_distance', 0.24)
         self.declare_parameter('front_slow_distance', 0.35)
 
         # =========================

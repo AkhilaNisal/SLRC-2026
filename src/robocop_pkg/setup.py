@@ -55,6 +55,8 @@ setup(
             'task3 = robocop_pkg.task3:main',
             'task_manager = robocop_pkg.task_manager:main',
             'servo_node = robocop_pkg.servo_node:main',
+            'restore_test_client = robocop_pkg.restore_test_client:main',
+            'pick_place_test_client = robocop_pkg.pick_place_test_client:main',
 
         ],
     },
