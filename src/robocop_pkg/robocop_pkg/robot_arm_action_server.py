@@ -90,7 +90,6 @@ class RobotArmActionServer(Node):
 
         # -------------------------------------------------
         # Custom robot-arm poses using joint angles (radians)
-        # Source values were provided in degrees and converted.
         # -------------------------------------------------
 
         # home = [20, 37, -72, 53]
@@ -147,7 +146,6 @@ class RobotArmActionServer(Node):
         self.declare_parameter("restore.arm1_arm2_joint", 0.7854)
         self.declare_parameter("restore.arm2_gripper_base_joint", 0.6109)
 
-        # how many boxes to restore in RESTORE mode
         self.declare_parameter("restore_box_count", 3)
 
         self.restore_box_count = int(self.get_parameter("restore_box_count").value)
@@ -343,7 +341,15 @@ class RobotArmActionServer(Node):
             f"using place1..place{restore_count} -> restore"
         )
 
-        total_major_steps = restore_count * 4 + 1
+        # For each box:
+        # 1) open gripper
+        # 2) move to placeN
+        # 3) close gripper
+        # 4) move to restore
+        # 5) open gripper
+        # After all:
+        # 6) move home
+        total_major_steps = restore_count * 5 + 1
         major_step = 0
 
         for i in range(1, restore_count + 1):
@@ -353,18 +359,23 @@ class RobotArmActionServer(Node):
             if goal_handle.is_cancel_requested:
                 return self.canceled_result(goal_handle, f"Restore canceled before {place_prefix}")
 
+            # Step 1: open gripper before pickup
             major_step += 1
             self.publish_feedback(
                 goal_handle,
-                f"{place_prefix}_approach_open",
+                f"{place_prefix}_open_before_pick",
                 major_step / total_major_steps
             )
             if not self.move_gripper_named("gripper_open"):
-                return self.fail_result(goal_handle, f"Restore failed: gripper_open before {place_prefix}")
+                return self.fail_result(
+                    goal_handle,
+                    f"Restore failed: gripper_open before {place_prefix}"
+                )
 
             if goal_handle.is_cancel_requested:
                 return self.canceled_result(goal_handle, f"Restore canceled before move to {place_prefix}")
 
+            # Step 2: move to place position
             major_step += 1
             self.publish_feedback(
                 goal_handle,
@@ -377,18 +388,23 @@ class RobotArmActionServer(Node):
             if goal_handle.is_cancel_requested:
                 return self.canceled_result(goal_handle, f"Restore canceled at {place_prefix}")
 
+            # Step 3: close gripper after reaching place
             major_step += 1
             self.publish_feedback(
                 goal_handle,
-                f"grab_from_{place_prefix}",
+                f"close_at_{place_prefix}",
                 major_step / total_major_steps
             )
             if not self.move_gripper_named("gripper_close"):
-                return self.fail_result(goal_handle, f"Restore failed: close gripper at {place_prefix}")
+                return self.fail_result(
+                    goal_handle,
+                    f"Restore failed: gripper_close at {place_prefix}"
+                )
 
             if goal_handle.is_cancel_requested:
-                return self.canceled_result(goal_handle, f"Restore canceled after grabbing from {place_prefix}")
+                return self.canceled_result(goal_handle, f"Restore canceled after closing at {place_prefix}")
 
+            # Step 4: move to restore pose
             major_step += 1
             self.publish_feedback(
                 goal_handle,
@@ -396,20 +412,28 @@ class RobotArmActionServer(Node):
                 major_step / total_major_steps
             )
             if not self.move_arm_joint_values(restore_joints, "restore"):
-                return self.fail_result(goal_handle, f"Restore failed: move to restore from {place_prefix}")
+                return self.fail_result(
+                    goal_handle,
+                    f"Restore failed: move to restore from {place_prefix}"
+                )
 
             if goal_handle.is_cancel_requested:
                 return self.canceled_result(goal_handle, f"Restore canceled at restore from {place_prefix}")
 
-            release_progress = min(0.99, (major_step + 0.5) / total_major_steps)
+            # Step 5: open gripper at restore pose
+            major_step += 1
             self.publish_feedback(
                 goal_handle,
-                f"release_at_restore_from_{place_prefix}",
-                release_progress
+                f"open_at_restore_from_{place_prefix}",
+                major_step / total_major_steps
             )
             if not self.move_gripper_named("gripper_open"):
-                return self.fail_result(goal_handle, f"Restore failed: release at restore from {place_prefix}")
+                return self.fail_result(
+                    goal_handle,
+                    f"Restore failed: gripper_open at restore from {place_prefix}"
+                )
 
+        # Final: return home
         major_step += 1
         self.publish_feedback(goal_handle, "restore_return_home", major_step / total_major_steps)
         if not self.move_arm_joint_values(home_joints, "home"):
@@ -419,7 +443,6 @@ class RobotArmActionServer(Node):
             goal_handle,
             f"Restore sequence completed successfully for {restore_count} boxes."
         )
-
 
     def execute_callback(self, goal_handle):
         side = goal_handle.request.side.strip().upper()

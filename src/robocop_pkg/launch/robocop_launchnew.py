@@ -76,8 +76,8 @@ def generate_launch_description():
 
     tof_node = Node(
         package='tof_sensors',
-        executable='tof_dual_node',
-        name='tof_dual_node',
+        executable='tof_node',
+        name='tof_node',
         output='screen',
     )
 

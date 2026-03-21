@@ -27,7 +27,7 @@ class Task3Node(Node):
         # =========================
         self.declare_parameter('image_topic', '/camera/image/image_color')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('front_range_topic', '/robocop/ds_right')#******************
+        self.declare_parameter('front_range_topic', '/robocop/ds_front')
         self.declare_parameter('task3_status_topic', '/task3/status')
 
         # =========================
@@ -38,29 +38,29 @@ class Task3Node(Node):
 
         # =========================
         # Motion
+        # Do not change these calibration values
         # =========================
-        self.declare_parameter('linear_speed', 0.08)
-        self.declare_parameter('search_linear', 0.04)
-        self.declare_parameter('search_angular', 0.30)
+        self.declare_parameter('linear_speed', 0.2)
+        self.declare_parameter('search_linear', 0.05)
+        self.declare_parameter('search_angular', 0.35)
 
         self.declare_parameter('kp_line', 0.004)
         self.declare_parameter('max_angular_line', 1.2)
 
         self.declare_parameter('turn_left_angular_speed', 0.8)
-        self.declare_parameter('turn_left_90_time', 2.35)
+        self.declare_parameter('turn_left_90_time', 2.85)
         self.declare_parameter('post_turn_wait_time', 0.8)
 
-        self.declare_parameter('junction_turn_speed', 0.75)
-        self.declare_parameter('junction_turn_90_time', 2.35)
+        self.declare_parameter('junction_turn_speed', 0.8)
+        self.declare_parameter('junction_turn_90_time', 2.85)
         self.declare_parameter('junction_confirm_frames', 4)
 
-        self.declare_parameter('pre_turn_distance', 0.3)
+        self.declare_parameter('pre_turn_distance', 0.36)
         self.declare_parameter('pre_turn_speed', 0.10)
 
         # =========================
         # White line detection
         # =========================
-        # Main follow ROI: center/lower vertical region
         self.declare_parameter('follow_roi_y_start', 0.55)
         self.declare_parameter('follow_roi_x_min_ratio', 0.15)
         self.declare_parameter('follow_roi_x_max_ratio', 0.85)
@@ -294,14 +294,18 @@ class Task3Node(Node):
         self.task3_done = False
         self.task3_done_published = False
 
+        # ---- physical robot fix ----
+        # When the robot gets very close to the marker, the circles can leave the camera view.
+        # In that case the old code started rotating in APPROACH_MARKER.
+        # These variables make the approach state "latch" success instead of searching forever.
+        self.approach_marker_seen_once = False
+        self.approach_marker_lost_counter = 0
+        self.approach_marker_lost_limit = 8
+
         self.frame_count = 0
         self.last_log_time = self.get_clock().now()
 
         cv2.namedWindow("task3_camera", cv2.WINDOW_NORMAL)
-        # cv2.namedWindow("task3_follow_mask", cv2.WINDOW_NORMAL)
-        # cv2.namedWindow("task3_side_mask", cv2.WINDOW_NORMAL)
-        # cv2.namedWindow("task3_green_mask", cv2.WINDOW_NORMAL)
-        # cv2.namedWindow("task3_blue_mask", cv2.WINDOW_NORMAL)
 
         self.get_logger().info(
             f"Task 3 started. Branch side: {self.branch_side}. "
@@ -597,9 +601,6 @@ class Task3Node(Node):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         h, w = frame.shape[:2]
 
-        # =========================
-        # Main follow ROI: center/lower vertical region
-        # =========================
         fy0 = int(h * self.follow_roi_y_start)
         fx0 = int(w * self.follow_roi_x_min_ratio)
         fx1 = int(w * self.follow_roi_x_max_ratio)
@@ -613,9 +614,6 @@ class Task3Node(Node):
         M = cv2.moments(follow_mask)
         area = M["m00"]
 
-        # =========================
-        # Bottom strip for side branch detection
-        # =========================
         bh = int(h * self.bottom_strip_height_ratio)
         by0 = max(0, h - bh)
         bottom_roi = frame[by0:h, 0:w]
@@ -641,7 +639,7 @@ class Task3Node(Node):
             if self.front_range_valid and self.front_range <= self.front_stop_distance:
                 self.state = self.STATE_STOPPED
                 self.get_logger().info(
-                    f"Target reached. Front distance = {self.front_range:.3f} m. Robot stopped."
+                    f"Target reached by range sensor. Distance = {self.front_range:.3f} m. Robot stopped."
                 )
 
         if self.state == self.STATE_INITIAL_TURN:
@@ -767,6 +765,8 @@ class Task3Node(Node):
 
             if self.marker_seen_counter >= self.marker_confirm_frames:
                 self.state = self.STATE_ALIGN_MARKER
+                self.approach_marker_seen_once = False
+                self.approach_marker_lost_counter = 0
                 twist.linear.x = 0.0
                 twist.angular.z = 0.0
                 self.get_logger().info(f"Marker detected using {marker_mode}. Switching to ALIGN_MARKER.")
@@ -777,6 +777,8 @@ class Task3Node(Node):
                 error_x = float(marker_center[0] - (w // 2))
                 if abs(error_x) <= self.marker_align_tolerance_px:
                     self.state = self.STATE_APPROACH_MARKER
+                    self.approach_marker_seen_once = True
+                    self.approach_marker_lost_counter = 0
                     self.get_logger().info(f"Marker aligned using {marker_mode}. Switching to APPROACH_MARKER.")
             else:
                 twist.linear.x = 0.0
@@ -784,6 +786,9 @@ class Task3Node(Node):
 
         elif self.state == self.STATE_APPROACH_MARKER:
             if marker_found:
+                self.approach_marker_seen_once = True
+                self.approach_marker_lost_counter = 0
+
                 approach_speed = self.marker_approach_speed
                 if self.front_range_valid and self.front_range <= self.front_slow_distance:
                     approach_speed = min(approach_speed, 0.045)
@@ -795,8 +800,22 @@ class Task3Node(Node):
                 twist.linear.x = approach_speed
                 twist.angular.z = ang
             else:
-                twist.linear.x = 0.0
-                twist.angular.z = self.marker_search_angular
+                # Physical-robot fix:
+                # when very close, marker can disappear from view.
+                # Instead of rotating forever, stop and finish if we had already started approach.
+                if self.approach_marker_seen_once:
+                    self.approach_marker_lost_counter += 1
+                    twist.linear.x = 0.0
+                    twist.angular.z = 0.0
+
+                    if self.approach_marker_lost_counter >= self.approach_marker_lost_limit:
+                        self.state = self.STATE_STOPPED
+                        self.get_logger().info(
+                            "Marker lost after close approach. Assuming target reached. Robot stopped."
+                        )
+                else:
+                    twist.linear.x = 0.0
+                    twist.angular.z = self.marker_search_angular
 
         elif self.state == self.STATE_STOPPED:
             twist.linear.x = 0.0
@@ -831,26 +850,20 @@ class Task3Node(Node):
 
         self.cmd_pub.publish(twist)
 
-        # =========================
-        # Visualization
-        # =========================
         vis = frame.copy()
 
-        # Follow ROI
         cv2.rectangle(vis, (fx0, fy0), (fx1 - 1, h - 1), (0, 255, 0), 2)
         cv2.putText(
             vis, "FOLLOW ROI", (fx0 + 5, max(25, fy0 - 10)),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
         )
 
-        # Branch ROI
         cv2.rectangle(vis, (side_x1, by0), (side_x2 - 1, h - 1), (255, 255, 0), 2)
         cv2.putText(
             vis, f"{self.branch_side} BOTTOM BRANCH ROI", (10, h - 20),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2
         )
 
-        # Blue ROI
         bx0, byy0, bx1, byy1 = blue_roi_box
         cv2.rectangle(vis, (bx0, byy0), (bx1 - 1, byy1 - 1), (255, 0, 0), 2)
         cv2.putText(
@@ -858,17 +871,14 @@ class Task3Node(Node):
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2
         )
 
-        # Follow centroid
         if area > self.min_area:
             cx_vis = fx0 + int(M["m10"] / area)
             cy_vis = fy0 + (h - fy0) // 2
             cv2.circle(vis, (cx_vis, cy_vis), 8, (0, 255, 255), -1)
 
-        # Center cross
         cv2.line(vis, (w // 2, 0), (w // 2, h - 1), (0, 0, 255), 1)
         cv2.line(vis, (0, h // 2), (w - 1, h // 2), (0, 0, 255), 1)
 
-        # Marker points
         for p in self.last_green_centers:
             cv2.circle(vis, p, 14, (0, 255, 0), 2)
             cv2.circle(vis, p, 3, (0, 255, 0), -1)
@@ -927,25 +937,28 @@ class Task3Node(Node):
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
         )
 
+        cv2.putText(
+            vis,
+            f"approach_seen={self.approach_marker_seen_once} lost={self.approach_marker_lost_counter}",
+            (10, 210),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2
+        )
+
         if self.restore_goal_sent:
             cv2.putText(
                 vis, f"RESTORE sent | done={self.restore_goal_done} ok={self.restore_goal_success}",
-                (10, 210),
+                (10, 240),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2
             )
 
         if self.task3_done_published:
             cv2.putText(
                 vis, "TASK3 STATUS: DONE",
-                (10, 240),
+                (10, 270),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2
             )
 
         cv2.imshow("task3_camera", vis)
-        # cv2.imshow("task3_follow_mask", follow_mask)
-        # cv2.imshow("task3_side_mask", side_mask)
-        # cv2.imshow("task3_green_mask", green_mask)
-        # cv2.imshow("task3_blue_mask", blue_mask)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -965,6 +978,8 @@ class Task3Node(Node):
                 f"branch_count={self.branch_count}/{self.target_branch_index} "
                 f"marker_found={marker_found} mode={marker_mode} "
                 f"front={'NA' if not self.front_range_valid else f'{self.front_range:.3f}'} "
+                f"approach_seen={self.approach_marker_seen_once} "
+                f"approach_lost={self.approach_marker_lost_counter} "
                 f"restore_sent={self.restore_goal_sent} "
                 f"task3_done_pub={self.task3_done_published} "
                 f"cmd(v,w)=({twist.linear.x:.2f},{twist.angular.z:.2f})"
