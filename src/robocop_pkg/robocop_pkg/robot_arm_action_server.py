@@ -89,33 +89,63 @@ class RobotArmActionServer(Node):
         ]
 
         # -------------------------------------------------
-        # Custom robot-arm poses using joint angles
+        # Custom robot-arm poses using joint angles (radians)
+        # Source values were provided in degrees and converted.
         # -------------------------------------------------
 
-        # home
-        self.declare_parameter("home.base_rotating_waste_joint", 0.0)
-        self.declare_parameter("home.rotating_waste_arm1_joint", 0.6506)
-        self.declare_parameter("home.arm1_arm2_joint", -1.57)
-        self.declare_parameter("home.arm2_gripper_base_joint", -0.6506)
+        # home = [20, 37, -72, 53]
+        self.declare_parameter("home.base_rotating_waste_joint", 0.3491)
+        self.declare_parameter("home.rotating_waste_arm1_joint", 0.6458)
+        self.declare_parameter("home.arm1_arm2_joint", -1.2566)
+        self.declare_parameter("home.arm2_gripper_base_joint", 0.9250)
 
-        # grab pose
-        self.declare_parameter("grab.base_rotating_waste_joint", 0.0)
-        self.declare_parameter("grab.rotating_waste_arm1_joint", -1.0669)
-        self.declare_parameter("grab.arm1_arm2_joint", -1.4659)
-        self.declare_parameter("grab.arm2_gripper_base_joint", 0.9628)
+        # grab = [-7, 12, -100, 67]
+        self.declare_parameter("grab.base_rotating_waste_joint", -0.1222)
+        self.declare_parameter("grab.rotating_waste_arm1_joint", 0.2094)
+        self.declare_parameter("grab.arm1_arm2_joint", -1.7453)
+        self.declare_parameter("grab.arm2_gripper_base_joint", 1.1694)
 
-        # place1..place6
-        for i in range(1, 7):
-            self.declare_parameter(f"place{i}.base_rotating_waste_joint", 1.57)
-            self.declare_parameter(f"place{i}.rotating_waste_arm1_joint", -0.4597)
-            self.declare_parameter(f"place{i}.arm1_arm2_joint", -0.9455)
-            self.declare_parameter(f"place{i}.arm2_gripper_base_joint", -0.5985)
+        # place1 = [-16, 12, -100, 67]
+        self.declare_parameter("place1.base_rotating_waste_joint", -0.2793)
+        self.declare_parameter("place1.rotating_waste_arm1_joint", 0.2094)
+        self.declare_parameter("place1.arm1_arm2_joint", -1.7453)
+        self.declare_parameter("place1.arm2_gripper_base_joint", 1.1694)
 
-        # restore pose
-        self.declare_parameter("restore.base_rotating_waste_joint", -1.57)
-        self.declare_parameter("restore.rotating_waste_arm1_joint", -0.4597)
-        self.declare_parameter("restore.arm1_arm2_joint", -0.9455)
-        self.declare_parameter("restore.arm2_gripper_base_joint", -0.5985)
+        # place2 = [23, -4, -92, 75]
+        self.declare_parameter("place2.base_rotating_waste_joint", 0.4014)
+        self.declare_parameter("place2.rotating_waste_arm1_joint", -0.0698)
+        self.declare_parameter("place2.arm1_arm2_joint", -1.6057)
+        self.declare_parameter("place2.arm2_gripper_base_joint", 1.3090)
+
+        # place3 = [60, 16, -79, 81]
+        self.declare_parameter("place3.base_rotating_waste_joint", 1.0472)
+        self.declare_parameter("place3.rotating_waste_arm1_joint", 0.2793)
+        self.declare_parameter("place3.arm1_arm2_joint", -1.3788)
+        self.declare_parameter("place3.arm2_gripper_base_joint", 1.4137)
+
+        # place4 = same as place1
+        self.declare_parameter("place4.base_rotating_waste_joint", -0.2793)
+        self.declare_parameter("place4.rotating_waste_arm1_joint", 0.2094)
+        self.declare_parameter("place4.arm1_arm2_joint", -1.7453)
+        self.declare_parameter("place4.arm2_gripper_base_joint", 1.1694)
+
+        # place5 = same as place2
+        self.declare_parameter("place5.base_rotating_waste_joint", 0.4014)
+        self.declare_parameter("place5.rotating_waste_arm1_joint", -0.0698)
+        self.declare_parameter("place5.arm1_arm2_joint", -1.6057)
+        self.declare_parameter("place5.arm2_gripper_base_joint", 1.3090)
+
+        # place6 = same as place3
+        self.declare_parameter("place6.base_rotating_waste_joint", 1.0472)
+        self.declare_parameter("place6.rotating_waste_arm1_joint", 0.2793)
+        self.declare_parameter("place6.arm1_arm2_joint", -1.3788)
+        self.declare_parameter("place6.arm2_gripper_base_joint", 1.4137)
+
+        # restore = [-5, 76, 45, 35]
+        self.declare_parameter("restore.base_rotating_waste_joint", -0.0873)
+        self.declare_parameter("restore.rotating_waste_arm1_joint", 1.3265)
+        self.declare_parameter("restore.arm1_arm2_joint", 0.7854)
+        self.declare_parameter("restore.arm2_gripper_base_joint", 0.6109)
 
         # how many boxes to restore in RESTORE mode
         self.declare_parameter("restore_box_count", 3)
@@ -389,6 +419,7 @@ class RobotArmActionServer(Node):
             goal_handle,
             f"Restore sequence completed successfully for {restore_count} boxes."
         )
+
 
     def execute_callback(self, goal_handle):
         side = goal_handle.request.side.strip().upper()

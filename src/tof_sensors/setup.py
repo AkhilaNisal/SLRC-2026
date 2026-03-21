@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'tof_dual_node = tof_sensors.tof_dual_node:main',
+            'tof_node = tof_sensors.tof_node:main',
         ],
     },
 )
