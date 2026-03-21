@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'tof_sensors'
+package_name = 'arm_pose_tuner'
 
 setup(
     name=package_name,
@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'tof_node = tof_sensors.tof_node:main',
+                "pose_tuner = arm_pose_tuner.pose_tuner:main",
         ],
     },
 )

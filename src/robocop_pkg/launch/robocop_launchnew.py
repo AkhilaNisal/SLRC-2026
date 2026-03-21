@@ -1,8 +1,28 @@
 from launch import LaunchDescription
+from launch.actions import ExecuteProcess, IncludeLaunchDescription, TimerAction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+import os
 
 
 def generate_launch_description():
+    moveit_pkg_share = get_package_share_directory('robot_arm_v2_moveit_config')
+    moveit_demo_launch = os.path.join(moveit_pkg_share, 'launch', 'demo.launch.py')
+
+    pca9685_bridge = ExecuteProcess(
+        cmd=[
+            '/home/thunderbot/SLRC-2026/venv/bin/python',
+            '/home/thunderbot/SLRC-2026/src/rpi_arm_hardware/scripts/pca9685_bridge.py'
+        ],
+        name='pca9685_bridge',
+        output='screen'
+    )
+
+    moveit_demo = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(moveit_demo_launch)
+    )
+
     camera_feed_node = Node(
         package='camera_feed',
         executable='camera_feed_node',
@@ -54,63 +74,33 @@ def generate_launch_description():
         }]
     )
 
-    task_manager = Node(
-        package='robocop_pkg',
-        executable='task_manager',
-        name='task_manager',
-        output='screen',
-        parameters=[{
-            'task2_package': 'robocop_pkg',
-            'task2_executable': 'task2_with_arm',
-            'task3_package': 'robocop_pkg',
-            'task3_executable': 'task3',
-            'task2_status_topic': '/task2/status',
-            'task3_status_topic': '/task3/status',
-            'startup_delay_sec': 2.0,
-            'shutdown_wait_sec': 3.0,
-        }]
-    )
-
-    tof_dual_node = Node(
+    tof_node = Node(
         package='tof_sensors',
-        executable='tof_dual_node',
-        name='tof_dual_node',
+        executable='tof_node',
+        name='tof_node',
         output='screen',
-        parameters=[{
-            'left_range_topic': '/robocop/ds_left',
-            'right_range_topic': '/robocop/ds_right',
-            'left_frame_id': 'tof_left',
-            'right_frame_id': 'tof_right',
-            'publish_rate_hz': 10.0,
-            'left_xshut_pin': 'D17',
-            'right_xshut_pin': 'D27',
-            'left_i2c_address': 0x30,
-            'right_i2c_address': 0x29,
-        }]
-    )
-
-    task2_with_arm = Node(
-        package='robocop_pkg',
-        executable='task2_with_arm',   # must match setup.py entry point
-        name='task2_with_arm',
-        output='screen',
-    
     )
 
     task3 = Node(
         package='robocop_pkg',
-        executable='task3',   # must match setup.py entry point
+        executable='task3',
         name='task3',
         output='screen',
-    
+    )
+
+    delayed_task_nodes = TimerAction(
+        period=8.0,
+        actions=[
+            robot_arm_action_server,
+            task3,
+        ]
     )
 
     return LaunchDescription([
+        pca9685_bridge,
+        moveit_demo,
         camera_feed_node,
-        tof_dual_node,
-        robot_arm_action_server,
+        tof_node,
         cmd_vel_stepper_node,
-        # task2_with_arm,
-        task3,
-        # task_masnager,
+        delayed_task_nodes,
     ])

@@ -303,9 +303,9 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.last_log_time = self.get_clock().now()
 
         cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("bottom_mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("red_mask", cv2.WINDOW_NORMAL)
+        # cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
+        # cv2.namedWindow("bottom_mask", cv2.WINDOW_NORMAL)
+        # cv2.namedWindow("red_mask", cv2.WINDOW_NORMAL)
 
         self.configure_line_cross_sequence(
             speed=self.forward_speed,
@@ -999,9 +999,9 @@ class WhiteLineFollowerWithBoxVisit(Node):
         )
 
         cv2.imshow("camera", vis)
-        cv2.imshow("mask", mask)
-        cv2.imshow("bottom_mask", bottom_mask)
-        cv2.imshow("red_mask", red_mask)
+        # cv2.imshow("mask", mask)
+        # cv2.imshow("bottom_mask", bottom_mask)
+        # cv2.imshow("red_mask", red_mask)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):

@@ -1,28 +1,30 @@
 #!/usr/bin/env python3
 
-import math
 import socket
 import time
 from adafruit_servokit import ServoKit
 
-NUM_JOINTS = 4
+NUM_JOINTS = 5
 
-# PCA9685 channels used for your 4 arm joints
-SERVO_CHANNELS = [0, 1, 2, 3]
+# PCA9685 channels used for the 4 arm joints + 1 gripper joint
+SERVO_CHANNELS = [0, 1, 2, 3, 4]
 
 # ---------------- Joint limits in RAD ----------------
-joint_lower_rad = [-1.57, -1.57, -0.972, -1.57]
-joint_upper_rad = [ 1.57,  1.57,  2.172,  1.57]
+# First 4 are your arm joints.
+# 5th is the gripper joint. Change these if needed.
+
+joint_lower_rad = [-1.57, -1.57, -2.35, -1.57, -0.60]
+joint_upper_rad = [ 1.57,  1.57,  0.78,  1.57,  0.60]
 
 # If reversed, min/max are swapped
-servo_min_deg = [0, 180, 0, 180]
-servo_max_deg = [180, 0, 180, 0]
+servo_min_deg = [0, 180, 0, 180, 0]
+servo_max_deg = [180, 0, 180, 0, 180]
 
 # Zero trim in servo degrees
-zero_offset_deg = [0, 1, -10, 0]
+zero_offset_deg = [0, 1, -10, 0, 0]
 
 # Smoothing and update timing
-SERVO_PERIOD_SEC = 0.02      # 50 Hz
+SERVO_PERIOD_SEC = 0.02   # 50 Hz
 ALPHA = 0.18
 DEADBAND_DEG = 1
 FEEDBACK_PERIOD_SEC = 0.05   # 20 Hz
@@ -32,9 +34,13 @@ PORT = 9999
 
 kit = ServoKit(channels=16)
 
-current_pos = [0, 0, 0, 0]      # integer servo degrees actually written
-target_pos = [0, 0, 0, 0]       # integer servo target degrees
-filtered_pos = [0.0, 0.0, 0.0, 0.0]
+# integer servo degrees actually written
+current_pos = [0] * NUM_JOINTS
+
+# integer servo target degrees
+target_pos = [0] * NUM_JOINTS
+
+filtered_pos = [0.0] * NUM_JOINTS
 
 
 def clampf(x, lo, hi):
@@ -52,16 +58,18 @@ def map_joint_to_servo(joint_index, joint_rad):
 
     sd = mapf(
         jr,
-        joint_lower_rad[joint_index], joint_upper_rad[joint_index],
-        float(servo_min_deg[joint_index]), float(servo_max_deg[joint_index])
+        joint_lower_rad[joint_index],
+        joint_upper_rad[joint_index],
+        float(servo_min_deg[joint_index]),
+        float(servo_max_deg[joint_index])
     )
 
     sd += float(zero_offset_deg[joint_index])
 
     smin = min(servo_min_deg[joint_index], servo_max_deg[joint_index])
     smax = max(servo_min_deg[joint_index], servo_max_deg[joint_index])
-    sd = clampf(sd, smin, smax)
 
+    sd = clampf(sd, smin, smax)
     return int(sd + 0.5)
 
 
@@ -78,10 +86,11 @@ def map_servo_to_joint(joint_index, servo_deg):
 
     jr = mapf(
         float(sd),
-        float(servo_min_deg[joint_index]), float(servo_max_deg[joint_index]),
-        joint_lower_rad[joint_index], joint_upper_rad[joint_index]
+        float(servo_min_deg[joint_index]),
+        float(servo_max_deg[joint_index]),
+        joint_lower_rad[joint_index],
+        joint_upper_rad[joint_index]
     )
-
     return jr
 
 
@@ -113,7 +122,9 @@ def parse_positions(line):
 
 
 def send_positions(conn):
-    msg = "S:" + ",".join(f"{map_servo_to_joint(i, current_pos[i]):.3f}" for i in range(NUM_JOINTS)) + "\n"
+    msg = "S:" + ",".join(
+        f"{map_servo_to_joint(i, current_pos[i]):.3f}" for i in range(NUM_JOINTS)
+    ) + "\n"
     conn.sendall(msg.encode("utf-8"))
 
 
@@ -147,7 +158,6 @@ def run_server():
 
         conn.settimeout(0.001)
         rx_buffer = ""
-
         last_servo = time.monotonic()
         last_feedback = time.monotonic()
 
@@ -155,7 +165,6 @@ def run_server():
             while True:
                 now = time.monotonic()
 
-                # Read incoming data
                 try:
                     data = conn.recv(256)
                     if not data:
@@ -164,19 +173,16 @@ def run_server():
                 except socket.timeout:
                     pass
 
-                # Process complete lines
                 while "\n" in rx_buffer:
                     line, rx_buffer = rx_buffer.split("\n", 1)
                     line = line.strip()
                     if line:
                         parse_positions(line)
 
-                # Servo update at fixed rate
                 if now - last_servo >= SERVO_PERIOD_SEC:
                     servo_update()
                     last_servo = now
 
-                # Feedback at fixed rate
                 if now - last_feedback >= FEEDBACK_PERIOD_SEC:
                     send_positions(conn)
                     last_feedback = now
@@ -185,6 +191,7 @@ def run_server():
 
         except Exception as e:
             print(f"Connection error: {e}")
+
         finally:
             conn.close()
             print("Client disconnected")
