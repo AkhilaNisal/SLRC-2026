@@ -8,6 +8,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.action import ActionClient
+from rclpy.duration import Duration
 
 from sensor_msgs.msg import Image, Range
 from geometry_msgs.msg import Twist
@@ -38,12 +39,12 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         # Motion control
         # =========================
-        self.declare_parameter('forward_speed', 0.12)
+        self.declare_parameter('forward_speed', 0.25)
         self.declare_parameter('linear_speed', 0.15)
         self.declare_parameter('kp', 0.004)
         self.declare_parameter('max_angular', 1.2)
 
-        self.declare_parameter('extra_forward_distance', 0.3)
+        self.declare_parameter('extra_forward_distance', 0.19)
         self.declare_parameter('post_turn_wait_time', 1.0)
 
         self.declare_parameter('search_linear', 0.04)
@@ -53,7 +54,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # Gyro turning control
         # =========================
         self.declare_parameter('turn_angle_90_deg', 90.0)
-        self.declare_parameter('turn_angle_180_deg', 180.0)
         self.declare_parameter('turn_tolerance_deg', 3.0)
         self.declare_parameter('turn_kp', 0.018)
         self.declare_parameter('turn_min_speed', 0.22)
@@ -103,18 +103,33 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         # Box detection while following line
         # =========================
-        self.declare_parameter('box_detect_distance', 0.54)
+        self.declare_parameter('left_box_detect_distance', 0.54)
+        self.declare_parameter('right_box_detect_distance', 0.45)
         self.declare_parameter('box_detect_frames', 4)
+
+        # ignore box search at first line-follow start
+        self.declare_parameter('startup_box_ignore_distance', 0.25)
+
+        # ignore same box after handling
+        self.declare_parameter('same_box_ignore_distance', 0.35)
+
+        # front obstacle / wall stop
+        self.declare_parameter('front_obstacle_stop_distance', 0.20)
+        self.declare_parameter('front_obstacle_stop_frames', 3)
 
         # =========================
         # Box visit maneuver
         # =========================
         self.declare_parameter('box_approach_speed', 0.08)
-        self.declare_parameter('box_stop_distance', 0.05)          # kept for compatibility
-        self.declare_parameter('box_front_stop_distance', 0.20)    # actual stop distance
-        self.declare_parameter('box_stop_frames', 10)
+        self.declare_parameter('box_stop_distance', 0.15)        # compatibility only
+        self.declare_parameter('box_front_stop_distance', 0.25)  # actual stop distance
+        self.declare_parameter('box_stop_frames', 1)
         self.declare_parameter('box_return_speed', 0.12)
         self.declare_parameter('box_drive_timeout_sec', 8.0)
+
+        # reverse after pick
+        self.declare_parameter('reverse_after_pick_speed', 0.15)
+        self.declare_parameter('reverse_after_pick_distance', 0.60)
 
         # =========================
         # Action client / pickup behavior
@@ -159,7 +174,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.search_angular = float(self.get_parameter('search_angular').value)
 
         self.turn_angle_90_deg = float(self.get_parameter('turn_angle_90_deg').value)
-        self.turn_angle_180_deg = float(self.get_parameter('turn_angle_180_deg').value)
         self.turn_tolerance_deg = float(self.get_parameter('turn_tolerance_deg').value)
         self.turn_kp = float(self.get_parameter('turn_kp').value)
         self.turn_min_speed = float(self.get_parameter('turn_min_speed').value)
@@ -193,12 +207,26 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.red_lost_frames_limit = int(self.get_parameter('red_lost_frames_limit').value)
 
         self.range_filter_alpha = float(self.get_parameter('range_filter_alpha').value)
-        self.print_distances_every_frame = bool(
-            self.get_parameter('print_distances_every_frame').value
+        self.print_distances_every_frame = bool(self.get_parameter('print_distances_every_frame').value)
+
+        self.left_box_detect_distance = float(self.get_parameter('left_box_detect_distance').value)
+        self.right_box_detect_distance = float(self.get_parameter('right_box_detect_distance').value)
+        self.box_detect_frames = int(self.get_parameter('box_detect_frames').value)
+
+        self.startup_box_ignore_distance = float(self.get_parameter('startup_box_ignore_distance').value)
+        self.startup_box_ignore_time = (
+            self.startup_box_ignore_distance / self.linear_speed
+            if self.linear_speed > 1e-6 else 0.0
         )
 
-        self.box_detect_distance = float(self.get_parameter('box_detect_distance').value)
-        self.box_detect_frames = int(self.get_parameter('box_detect_frames').value)
+        self.same_box_ignore_distance = float(self.get_parameter('same_box_ignore_distance').value)
+        self.same_box_ignore_time = (
+            self.same_box_ignore_distance / self.linear_speed
+            if self.linear_speed > 1e-6 else 0.0
+        )
+
+        self.front_obstacle_stop_distance = float(self.get_parameter('front_obstacle_stop_distance').value)
+        self.front_obstacle_stop_frames = int(self.get_parameter('front_obstacle_stop_frames').value)
 
         self.box_approach_speed = float(self.get_parameter('box_approach_speed').value)
         self.box_stop_distance = float(self.get_parameter('box_stop_distance').value)
@@ -206,6 +234,13 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.box_stop_frames = int(self.get_parameter('box_stop_frames').value)
         self.box_return_speed = float(self.get_parameter('box_return_speed').value)
         self.box_drive_timeout_sec = float(self.get_parameter('box_drive_timeout_sec').value)
+
+        self.reverse_after_pick_speed = float(self.get_parameter('reverse_after_pick_speed').value)
+        self.reverse_after_pick_distance = float(self.get_parameter('reverse_after_pick_distance').value)
+        self.reverse_after_pick_time = (
+            self.reverse_after_pick_distance / self.reverse_after_pick_speed
+            if self.reverse_after_pick_speed > 1e-6 else 0.0
+        )
 
         self.pick_action_name = str(self.get_parameter('pick_action_name').value)
         self.pick_retry_limit = int(self.get_parameter('pick_retry_limit').value)
@@ -257,9 +292,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.STATE_BOX_REQUEST_PICK = 'BOX_REQUEST_PICK'
         self.STATE_BOX_WAIT_PICK_RESULT = 'BOX_WAIT_PICK_RESULT'
         self.STATE_BOX_PICK_FAILED = 'BOX_PICK_FAILED'
-        self.STATE_BOX_TURN_BACK_180 = 'BOX_TURN_BACK_180'
-        self.STATE_BOX_RETURN_TO_LINE = 'BOX_RETURN_TO_LINE'
-
+        self.STATE_BOX_REVERSE_AFTER_PICK = 'BOX_REVERSE_AFTER_PICK'
+        self.STATE_BOX_TURN_TO_RESUME = 'BOX_TURN_TO_RESUME'
         self.STATE_TASK2_DONE = 'TASK2_DONE'
 
         self.state = self.STATE_LINE_CROSS_APPROACH
@@ -289,6 +323,19 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.boxes_completed = 0
         self.box_drive_start_time = None
         self.red_lost_counter = 0
+        self.reverse_start_time = None
+
+        # ignore same-side box detection after one pickup
+        self.ignore_box_side = None
+        self.ignore_box_until_time = None
+
+        # ignore all box detection only at the first time line following starts
+        self.startup_box_ignore_active = False
+        self.startup_box_ignore_until_time = None
+        self.startup_box_ignore_used = False
+
+        # front obstacle termination
+        self.front_obstacle_counter = 0
 
         # action state
         self.pick_goal_sent = False
@@ -329,7 +376,10 @@ class WhiteLineFollowerWithBoxVisit(Node):
             next_state=self.STATE_FOLLOW_LINE
         )
 
-        self.get_logger().info("Started task2_with_arm with red-centering and front-distance stop.")
+        self.get_logger().info(
+            "Started task2_with_arm with first-start box ignore, separate left/right TOF detect, "
+            "same-box ignore and front obstacle stop."
+        )
 
     @staticmethod
     def clamp(x: float, lo: float, hi: float) -> float:
@@ -365,6 +415,9 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
     def side_sign(self, side: str) -> float:
         return 1.0 if side == 'LEFT' else -1.0
+
+    def opposite_side_sign(self, side: str) -> float:
+        return -self.side_sign(side)
 
     def current_side_range(self) -> float:
         if self.active_box_side == 'LEFT':
@@ -458,19 +511,90 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.left_detect_counter = 0
         self.right_detect_counter = 0
         self.finish_wall_counter = 0
+        self.front_obstacle_counter = 0
         self.get_logger().info("Started box detection during white-line following.")
+
+    def start_startup_box_ignore(self):
+        self.startup_box_ignore_active = True
+        self.startup_box_ignore_used = True
+        self.startup_box_ignore_until_time = self.get_clock().now() + Duration(
+            seconds=self.startup_box_ignore_time
+        )
+        self.get_logger().info(
+            f"Ignoring all box detection for first {self.startup_box_ignore_distance:.2f} m "
+            f"({self.startup_box_ignore_time:.2f} s) after initial white-line start."
+        )
+
+    def startup_ignore_active_now(self) -> bool:
+        if not self.startup_box_ignore_active:
+            return False
+        if self.startup_box_ignore_until_time is None:
+            return False
+
+        now = self.get_clock().now()
+        if now < self.startup_box_ignore_until_time:
+            return True
+
+        self.startup_box_ignore_active = False
+        self.startup_box_ignore_until_time = None
+        self.get_logger().info("Initial box-search ignore finished. Normal side TOF box detection enabled.")
+        return False
 
     def reset_box_detection_counters(self):
         self.left_detect_counter = 0
         self.right_detect_counter = 0
+
+    def same_side_is_ignored(self, side: str) -> bool:
+        if self.ignore_box_side != side:
+            return False
+        if self.ignore_box_until_time is None:
+            return False
+
+        now = self.get_clock().now()
+        if now < self.ignore_box_until_time:
+            return True
+
+        self.ignore_box_side = None
+        self.ignore_box_until_time = None
+        return False
+
+    def start_same_box_ignore(self, side: str):
+        self.ignore_box_side = side
+        self.ignore_box_until_time = self.get_clock().now() + Duration(
+            seconds=self.same_box_ignore_time
+        )
+        self.get_logger().info(
+            f"Ignoring {side} side box detections for about {self.same_box_ignore_distance:.2f} m "
+            f"({self.same_box_ignore_time:.2f} s)."
+        )
+
+    def front_obstacle_should_stop(self) -> bool:
+        hit = self.valid_range(self.front_range) and self.front_range <= self.front_obstacle_stop_distance
+        if hit:
+            self.front_obstacle_counter += 1
+        else:
+            self.front_obstacle_counter = 0
+        return self.front_obstacle_counter >= self.front_obstacle_stop_frames
 
     def choose_box_side(self):
         if not self.measurement_started or self.state != self.STATE_FOLLOW_LINE:
             self.reset_box_detection_counters()
             return None
 
-        left_hit = self.valid_range(self.left_range) and self.left_range < self.box_detect_distance
-        right_hit = self.valid_range(self.right_range) and self.right_range < self.box_detect_distance
+        if self.startup_ignore_active_now():
+            self.reset_box_detection_counters()
+            return None
+
+        left_hit = (
+            self.valid_range(self.left_range)
+            and self.left_range < self.left_box_detect_distance
+            and not self.same_side_is_ignored('LEFT')
+        )
+        right_hit = (
+            self.valid_range(self.right_range)
+            and self.right_range < self.right_box_detect_distance
+            and not self.same_side_is_ignored('RIGHT')
+        )
 
         self.left_detect_counter = self.left_detect_counter + 1 if left_hit else 0
         self.right_detect_counter = self.right_detect_counter + 1 if right_hit else 0
@@ -510,6 +634,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.box_stop_counter = 0
         self.box_drive_start_time = None
         self.red_lost_counter = 0
+        self.reverse_start_time = None
 
         self.pick_goal_sent = False
         self.pick_in_progress = False
@@ -590,11 +715,11 @@ class WhiteLineFollowerWithBoxVisit(Node):
                     self.STATE_BOX_TURN_TO_BOX,
                     self.STATE_BOX_DRIVE_TO_BOX
                 )
-            elif self.state == self.STATE_BOX_TURN_BACK_180:
+            elif self.state == self.STATE_BOX_TURN_TO_RESUME:
                 self.start_relative_turn(
-                    self.side_sign(self.active_box_side) * self.turn_angle_180_deg,
-                    self.STATE_BOX_TURN_BACK_180,
-                    self.STATE_BOX_RETURN_TO_LINE
+                    self.opposite_side_sign(self.active_box_side) * self.turn_angle_90_deg,
+                    self.STATE_BOX_TURN_TO_RESUME,
+                    self.STATE_FOLLOW_LINE
                 )
             return
 
@@ -621,8 +746,16 @@ class WhiteLineFollowerWithBoxVisit(Node):
                     self.get_logger().info(
                         f"Turned toward {self.active_box_side} box. Centering red box, stopping by front distance sensor."
                     )
-                elif self.state == self.STATE_BOX_RETURN_TO_LINE:
-                    self.get_logger().info("Turned back 180. Returning to white line.")
+                elif self.state == self.STATE_FOLLOW_LINE:
+                    handled_side = self.active_box_side
+                    self.box_stop_counter = 0
+                    self.red_lost_counter = 0
+                    self.box_drive_start_time = None
+                    self.reverse_start_time = None
+                    self.active_box_side = None
+                    if handled_side is not None:
+                        self.start_same_box_ignore(handled_side)
+                    self.get_logger().info("Resume turn complete. Switching directly to white-line following.")
             return
 
         elapsed = (self.get_clock().now() - self.turn_start_time).nanoseconds / 1e9
@@ -643,6 +776,15 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 if self.state == self.STATE_BOX_DRIVE_TO_BOX:
                     self.box_drive_start_time = self.get_clock().now()
                     self.red_lost_counter = 0
+                elif self.state == self.STATE_FOLLOW_LINE:
+                    handled_side = self.active_box_side
+                    self.box_stop_counter = 0
+                    self.red_lost_counter = 0
+                    self.box_drive_start_time = None
+                    self.reverse_start_time = None
+                    self.active_box_side = None
+                    if handled_side is not None:
+                        self.start_same_box_ignore(handled_side)
             return
 
         speed = self.turn_kp * abs(error_deg)
@@ -702,6 +844,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 self.state = self.line_cross_next_state
                 if self.state == self.STATE_FOLLOW_LINE:
                     self.start_measurement()
+                    if not self.startup_box_ignore_used:
+                        self.start_startup_box_ignore()
                 self.get_logger().info(f"Line-cross sequence complete. Next state: {self.state}")
 
     def should_finish_task2(self) -> bool:
@@ -844,7 +988,18 @@ class WhiteLineFollowerWithBoxVisit(Node):
             self.run_line_cross_sequence(bottom_area, twist)
 
         elif self.state == self.STATE_FOLLOW_LINE:
-            if self.boxes_completed >= self.target_box_count:
+            if self.front_obstacle_should_stop():
+                twist.linear.x = 0.0
+                twist.angular.z = 0.0
+                self.state = self.STATE_TASK2_DONE
+                self.task2_done = True
+                self.stop_robot()
+                self.publish_task_done()
+                self.get_logger().info(
+                    f"Front obstacle/wall detected at {self.fmt_range(self.front_range)} m. Ending task."
+                )
+
+            elif self.boxes_completed >= self.target_box_count:
                 twist.linear.x = self.task2_finish_forward_speed
                 twist.angular.z = 0.0
 
@@ -943,19 +1098,36 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 if self.pick_result_success:
                     self.boxes_completed += 1
                     self.finish_wall_counter = 0
-                    self.start_relative_turn(
-                        self.side_sign(self.active_box_side) * self.turn_angle_180_deg,
-                        self.STATE_BOX_TURN_BACK_180,
-                        self.STATE_BOX_RETURN_TO_LINE
-                    )
+                    self.state = self.STATE_BOX_REVERSE_AFTER_PICK
+                    self.reverse_start_time = self.get_clock().now()
                     self.get_logger().info(
-                        f"Pick success. boxes_completed={self.boxes_completed}. Turning back 180 degrees."
+                        f"Pick success. boxes_completed={self.boxes_completed}. Reversing away from box."
                     )
                 else:
                     self.state = self.STATE_BOX_PICK_FAILED
                     self.get_logger().warn(
                         f"Pick failed. message={self.pick_result_message}"
                     )
+
+        elif self.state == self.STATE_BOX_REVERSE_AFTER_PICK:
+            twist.linear.x = -self.reverse_after_pick_speed
+            twist.angular.z = 0.0
+
+            elapsed = (self.get_clock().now() - self.reverse_start_time).nanoseconds / 1e9
+            if elapsed >= self.reverse_after_pick_time:
+                twist.linear.x = 0.0
+                twist.angular.z = 0.0
+                self.start_relative_turn(
+                    self.opposite_side_sign(self.active_box_side) * self.turn_angle_90_deg,
+                    self.STATE_BOX_TURN_TO_RESUME,
+                    self.STATE_FOLLOW_LINE
+                )
+                self.get_logger().info(
+                    f"Reverse complete. Turning opposite of previous detour for side={self.active_box_side}."
+                )
+
+        elif self.state == self.STATE_BOX_TURN_TO_RESUME:
+            self.execute_gyro_turn(twist)
 
         elif self.state == self.STATE_BOX_PICK_FAILED:
             twist.linear.x = 0.0
@@ -982,23 +1154,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 twist.linear.x = 0.0
                 twist.angular.z = 0.0
 
-        elif self.state == self.STATE_BOX_TURN_BACK_180:
-            self.execute_gyro_turn(twist)
-
-        elif self.state == self.STATE_BOX_RETURN_TO_LINE:
-            resume_turn_direction = self.side_sign(self.active_box_side)
-
-            self.configure_line_cross_sequence(
-                speed=self.box_return_speed,
-                turn_direction=resume_turn_direction,
-                next_state=self.STATE_FOLLOW_LINE
-            )
-            twist.linear.x = 0.0
-            twist.angular.z = 0.0
-            self.get_logger().info(
-                f"Returning from {self.active_box_side} box. Reusing line-cross sequence to resume path."
-            )
-
         elif self.state == self.STATE_TASK2_DONE:
             twist.linear.x = 0.0
             twist.angular.z = 0.0
@@ -1010,6 +1165,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.cmd_pub.publish(twist)
 
         if self.print_distances_every_frame and self.measurement_started:
+            ignore_side = self.ignore_box_side if self.ignore_box_side is not None else "None"
+            startup_ignore = self.startup_ignore_active_now()
             self.get_logger().info(
                 f"STATE={self.state} "
                 f"yaw={self.current_yaw_deg if self.current_yaw_deg is not None else 'None'} "
@@ -1017,6 +1174,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 f"left_raw={self.fmt_range(self.left_range_raw)} left_f={self.fmt_range(self.left_range)} "
                 f"right_raw={self.fmt_range(self.right_range_raw)} right_f={self.fmt_range(self.right_range)} "
                 f"front_raw={self.fmt_range(self.front_range_raw)} front_f={self.fmt_range(self.front_range)} "
+                f"startup_ignore={startup_ignore} ignore_side={ignore_side} "
+                f"front_stop_counter={self.front_obstacle_counter}/{self.front_obstacle_stop_frames} "
                 f"red_found={red_found} red_area={int(red_area)} "
                 f"pick_in_progress={self.pick_in_progress} pick_feedback='{self.pick_feedback_text}' "
                 f"boxes_completed={self.boxes_completed} "
@@ -1074,10 +1233,42 @@ class WhiteLineFollowerWithBoxVisit(Node):
             2
         )
 
+        ignore_txt = self.ignore_box_side if self.ignore_box_side is not None else "None"
+        startup_ignore_txt = "ON" if self.startup_ignore_active_now() else "OFF"
+        cv2.putText(
+            vis,
+            f"startup_ignore={startup_ignore_txt} ignore_side={ignore_txt}",
+            (10, 155),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 200, 140),
+            2
+        )
+
+        cv2.putText(
+            vis,
+            f"Lbox<{self.left_box_detect_distance:.2f} Rbox<{self.right_box_detect_distance:.2f}",
+            (10, 185),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 210, 120),
+            2
+        )
+
+        cv2.putText(
+            vis,
+            f"front_stop={self.front_obstacle_counter}/{self.front_obstacle_stop_frames}",
+            (10, 215),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 220, 150),
+            2
+        )
+
         cv2.putText(
             vis,
             f"LEFT count={self.left_box_count} RIGHT count={self.right_box_count}",
-            (10, 155),
+            (10, 245),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 165, 255),
@@ -1087,7 +1278,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"boxes_completed={self.boxes_completed}/{self.target_box_count}",
-            (10, 185),
+            (10, 275),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 220, 120),
@@ -1096,31 +1287,11 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         cv2.putText(
             vis,
-            f"finish_counter={self.finish_wall_counter}/{self.task2_finish_wall_frames}",
-            (10, 215),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (120, 255, 220),
-            2
-        )
-
-        cv2.putText(
-            vis,
             f"active_box={self.active_box_side} red_found={red_found}",
-            (10, 245),
+            (10, 305),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (200, 255, 200),
-            2
-        )
-
-        cv2.putText(
-            vis,
-            f"pick='{self.pick_feedback_text}'",
-            (10, 275),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 200, 100),
             2
         )
 
@@ -1129,7 +1300,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"yaw={yaw_txt} target={tgt_txt}",
-            (10, 305),
+            (10, 335),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (200, 255, 255),
@@ -1139,7 +1310,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"cmd v={twist.linear.x:.2f} w={twist.angular.z:.2f}",
-            (10, 335),
+            (10, 365),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 255, 0),
@@ -1167,9 +1338,10 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 f"left={self.display_range(self.left_range)} "
                 f"right={self.display_range(self.right_range)} "
                 f"front={self.display_range(self.front_range)} "
+                f"startup_ignore={startup_ignore_txt} "
+                f"ignore_side={ignore_txt} "
                 f"counts(L,R)=({self.left_box_count},{self.right_box_count}) "
                 f"boxes_completed={self.boxes_completed}/{self.target_box_count} "
-                f"finish_counter={self.finish_wall_counter}/{self.task2_finish_wall_frames} "
                 f"active_box={self.active_box_side} "
                 f"pick_in_progress={self.pick_in_progress} "
                 f"pick_result_ready={self.pick_result_ready} "
