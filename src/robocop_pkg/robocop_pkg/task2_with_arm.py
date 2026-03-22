@@ -41,10 +41,10 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         self.declare_parameter('forward_speed', 0.25)
         self.declare_parameter('linear_speed', 0.15)
-        self.declare_parameter('kp', 0.006)
+        self.declare_parameter('kp', 0.004)
         self.declare_parameter('max_angular', 1.2)
 
-        self.declare_parameter('extra_forward_distance', 0.15)
+        self.declare_parameter('extra_forward_distance', 0.19)
         self.declare_parameter('post_turn_wait_time', 1.0)
 
         self.declare_parameter('search_linear', 0.04)
@@ -108,7 +108,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('box_detect_frames', 4)
 
         # ignore box search at first line-follow start
-        self.declare_parameter('startup_box_ignore_distance', 0.10)
+        self.declare_parameter('startup_box_ignore_distance', 0.25)
 
         # ignore same box after handling
         self.declare_parameter('same_box_ignore_distance', 0.35)
@@ -122,7 +122,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         self.declare_parameter('box_approach_speed', 0.08)
         self.declare_parameter('box_stop_distance', 0.15)        # compatibility only
-        self.declare_parameter('box_front_stop_distance', 0.28)  # actual stop distance
+        self.declare_parameter('box_front_stop_distance', 0.25)  # actual stop distance
         self.declare_parameter('box_stop_frames', 1)
         self.declare_parameter('box_return_speed', 0.12)
         self.declare_parameter('box_drive_timeout_sec', 8.0)
@@ -579,19 +579,13 @@ class WhiteLineFollowerWithBoxVisit(Node):
     # =========================
     # UPDATED DETECTION ALGORITHM ONLY
     # =========================
-    def choose_box_side(self, stable_on_line: bool):
+    def choose_box_side(self):
         if not self.measurement_started or self.state != self.STATE_FOLLOW_LINE:
             self.reset_box_detection_counters()
             return None
 
         if self.startup_ignore_active_now():
             self.reset_box_detection_counters()
-            return None
-
-        # Do not trigger while robot is not stably following the line.
-        # Also do not aggressively reset here, so a valid side detection
-        # is not destroyed by one short steering correction.
-        if not stable_on_line:
             return None
 
         left_hit = (
@@ -605,8 +599,20 @@ class WhiteLineFollowerWithBoxVisit(Node):
             and not self.same_side_is_ignored('RIGHT')
         )
 
-        self.left_detect_counter = self.left_detect_counter + 1 if left_hit else 0
-        self.right_detect_counter = self.right_detect_counter + 1 if right_hit else 0
+        # keep previous counters if one frame is noisy during line correction
+        if left_hit:
+            self.left_detect_counter += 1
+        elif self.left_detect_counter > 0:
+            self.left_detect_counter -= 1
+        else:
+            self.left_detect_counter = 0
+
+        if right_hit:
+            self.right_detect_counter += 1
+        elif self.right_detect_counter > 0:
+            self.right_detect_counter -= 1
+        else:
+            self.right_detect_counter = 0
 
         left_ready = self.left_detect_counter >= self.box_detect_frames
         right_ready = self.right_detect_counter >= self.box_detect_frames
@@ -625,7 +631,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         self.reset_box_detection_counters()
         return side
-
+    
     def configure_line_cross_sequence(self, speed: float, turn_direction: float, next_state: str):
         self.line_cross_speed = speed
         self.line_cross_turn_direction = turn_direction
@@ -1026,8 +1032,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
                         f"front wall reached. front_range={self.fmt_range(self.front_range)}"
                     )
             else:
-                stable_on_line = False
-
                 if area > self.min_area:
                     cx = int(M["m10"] / area)
                     error = float(cx - (w // 2))
@@ -1036,15 +1040,11 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
                     twist.linear.x = self.linear_speed
                     twist.angular.z = ang
-
-                    # New detection gate only
-                    stable_on_line = (abs(error) <= 40.0 and abs(ang) <= 0.35)
                 else:
                     twist.linear.x = self.search_linear
                     twist.angular.z = self.search_angular
-                    stable_on_line = False
 
-                side = self.choose_box_side(stable_on_line)
+                side = self.choose_box_side()
                 if side is not None:
                     twist.linear.x = 0.0
                     twist.angular.z = 0.0
@@ -1334,7 +1334,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
             2
         )
 
-        # cv2.imshow("camera", vis)
+        cv2.imshow("camera", vis)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -1365,9 +1365,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 f"pick_feedback='{self.pick_feedback_text}' "
                 f"cmd(v,w)=({twist.linear.x:.2f},{twist.angular.z:.2f})"
             )
-            self.frame_count = 0
-
-
+        self.frame_count = 0
+        
 def main():
     rclpy.init()
     node = WhiteLineFollowerWithBoxVisit()
