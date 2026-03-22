@@ -135,15 +135,15 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # Action client / pickup behavior
         # =========================
         self.declare_parameter('pick_action_name', '/pick_box')
-        self.declare_parameter('pick_retry_limit', 2)
+        self.declare_parameter('pick_retry_limit', 5)
         self.declare_parameter('pick_goal_send_once', True)
 
         # =========================
         # Task 2 finish behavior
         # =========================
         self.declare_parameter('target_box_count', 6)
-        self.declare_parameter('task2_finish_wall_distance', 0.15)
-        self.declare_parameter('task2_finish_wall_frames', 3)
+        self.declare_parameter('task2_finish_wall_distance', 0.4)
+        self.declare_parameter('task2_finish_wall_frames', 1)
         self.declare_parameter('task2_finish_forward_speed', 0.08)
 
         # =========================
