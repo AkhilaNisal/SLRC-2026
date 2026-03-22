@@ -305,7 +305,7 @@ class Task3Node(Node):
         self.frame_count = 0
         self.last_log_time = self.get_clock().now()
 
-        cv2.namedWindow("task3_camera", cv2.WINDOW_NORMAL)
+        # cv2.namedWindow("task3_camera", cv2.WINDOW_NORMAL)
 
         self.get_logger().info(
             f"Task 3 started. Branch side: {self.branch_side}. "
@@ -958,15 +958,15 @@ class Task3Node(Node):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2
             )
 
-        cv2.imshow("task3_camera", vis)
+        # cv2.imshow("task3_camera", vis)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            self.get_logger().info("Quit requested.")
-            self.stop_robot()
-            rclpy.shutdown()
-            cv2.destroyAllWindows()
-            return
+        # key = cv2.waitKey(1) & 0xFF
+        # if key == ord('q'):
+        #     self.get_logger().info("Quit requested.")
+        #     self.stop_robot()
+        #     rclpy.shutdown()
+        #     cv2.destroyAllWindows()
+        #     return
 
         self.frame_count += 1
         now = self.get_clock().now()
@@ -999,7 +999,7 @@ def main():
             pass
 
         node.destroy_node()
-        cv2.destroyAllWindows()
+        # cv2.destroyAllWindows()
         if rclpy.ok():
             rclpy.shutdown()
 

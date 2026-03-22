@@ -79,7 +79,7 @@ def generate_launch_description():
         executable='tof_node',
         name='tof_node',
         output='screen',
-    )
+    ) 
 
     task2_with_arm = Node(
         package='robocop_pkg',
@@ -114,14 +114,35 @@ def generate_launch_description():
         ]
     )
 
+    task_manager = Node(
+    package='robocop_pkg',
+    executable='task_manager',
+    name='task_manager',
+    output='screen',
+    parameters=[{
+        'task2_package': 'robocop_pkg',
+        'task2_executable': 'task2_with_arm',
+        'task3_package': 'robocop_pkg',
+        'task3_executable': 'task3',
+        'task2_status_topic': '/task2/status',
+        'task3_status_topic': '/task3/status',
+        'startup_delay_sec': 2.0,
+        'shutdown_wait_sec': 3.0,
+    }]
+    )
+
     delayed_task_nodes = TimerAction(
         period=8.0,
         actions=[
             robot_arm_action_server,
             # task3,
-            task2_with_arm,
+            # task2_with_arm,
+            task_manager,
+
         ]
     )
+
+   
 
     return LaunchDescription([
         mpu_node,

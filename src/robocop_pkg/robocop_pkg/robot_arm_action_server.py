@@ -94,9 +94,9 @@ class RobotArmActionServer(Node):
         self.declare_parameter("home.rotating_waste_arm1_joint", 0.6458)
         self.declare_parameter("home.arm1_arm2_joint", -1.2566)
         self.declare_parameter("home.arm2_gripper_base_joint", 0.9250)
-        # grab = [-7, 77, 5, -80]
+        # grab = [-7, 77, 10, -80]
         self.declare_parameter("grab.base_rotating_waste_joint", -0.1222)
-        self.declare_parameter("grab.rotating_waste_arm1_joint", 1.3439)
+        self.declare_parameter("grab.rotating_waste_arm1_joint", 1.4439)
         self.declare_parameter("grab.arm1_arm2_joint", 0.0873)
         self.declare_parameter("grab.arm2_gripper_base_joint", -1.3963)
 
@@ -217,7 +217,7 @@ class RobotArmActionServer(Node):
                 self.get_logger().error(f"Planning failed for arm joint target '{label}'")
                 return False
 
-            self.robot.execute(plan_result.trajectory, controllers=[])
+            self.robot.execute(plan_result.trajectory, controllers=["robot_arm_controller"])
             time.sleep(self.step_pause_sec)
 
             joint_str = ", ".join([f"{k}={v:.4f}" for k, v in joint_values.items()])
@@ -241,7 +241,7 @@ class RobotArmActionServer(Node):
                 self.get_logger().error(f"Planning failed for gripper joint target '{label}'")
                 return False
 
-            self.robot.execute(plan_result.trajectory, controllers=[])
+            self.robot.execute(plan_result.trajectory, controllers=["gripper_controller"])
             time.sleep(self.step_pause_sec)
 
             joint_str = ", ".join([f"{k}={v:.4f}" for k, v in joint_values.items()])

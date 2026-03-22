@@ -12,7 +12,7 @@ SERVO_CHANNELS = [0, 1, 2, 3, 4]
 # ---------------- Joint limits in RAD ----------------
 # First 4 are arm joints.
 # 5th is gripper joint.
-#
+# 
 # IMPORTANT:
 # Make these match the values used by MoveIt/action server.
 # Since your action server is using gripper values around 0.0 and -1.2144,
@@ -39,7 +39,7 @@ HOME_JOINTS_RAD = [
     0.6458,   # rotating_waste_arm1_joint
     -1.2566,  # arm1_arm2_joint
     0.9250,   # arm2_gripper_base_joint
-    0.0       # gripper_base_left_joint (startup open)
+    -0.1   # gripper_base_left_joint (startup open)
 ]
 
 # Smoothing and update timing
