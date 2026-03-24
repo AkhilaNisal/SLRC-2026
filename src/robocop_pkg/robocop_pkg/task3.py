@@ -5,6 +5,8 @@
 
 import cv2
 import numpy as np
+
+from robocop_pkg.line_detection_utils import build_white_mask
 import rclpy
 
 from cv_bridge import CvBridge
@@ -337,15 +339,6 @@ class Task3Node(Node):
         else:
             self.front_range_valid = False
 
-    def build_white_mask(self, bgr_img):
-        hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
-        lower = np.array([self.h_low, self.s_low, self.v_low], dtype=np.uint8)
-        upper = np.array([self.h_high, self.s_high, self.v_high], dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        return mask
-
     def build_green_mask(self, bgr_img):
         hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
         lower = np.array([self.green_h_low, self.green_s_low, self.green_v_low], dtype=np.uint8)
@@ -610,7 +603,7 @@ class Task3Node(Node):
         fx1 = max(fx0 + 1, min(fx1, w))
 
         follow_roi = frame[fy0:h, fx0:fx1]
-        follow_mask = self.build_white_mask(follow_roi)
+        follow_mask = build_white_mask(follow_roi, self.h_low, self.s_low, self.v_low, self.h_high, self.s_high, self.v_high)
         M = cv2.moments(follow_mask)
         area = M["m00"]
 
@@ -627,7 +620,7 @@ class Task3Node(Node):
             side_x2 = w
             side_bottom = bottom_roi[:, side_x1:w]
 
-        side_mask = self.build_white_mask(side_bottom)
+        side_mask = build_white_mask(side_bottom, self.h_low, self.s_low, self.v_low, self.h_high, self.s_high, self.v_high)
         Ms = cv2.moments(side_mask)
         side_area = Ms["m00"]
 

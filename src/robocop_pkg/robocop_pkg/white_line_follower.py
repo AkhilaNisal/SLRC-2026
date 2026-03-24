@@ -7,7 +7,8 @@ from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
 
 import cv2
-import numpy as np
+
+from robocop_pkg.line_detection_utils import build_white_mask, line_centroid, steering_command
 
 
 class WhiteLineFollower(Node):
@@ -69,13 +70,9 @@ class WhiteLineFollower(Node):
         cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
         cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
 
-        self.get_logger().info(f"✅ Subscribing to: {self.image_topic}")
-        self.get_logger().info(f"✅ Publishing cmd_vel: {self.cmd_vel_topic}")
+        self.get_logger().info(f"Subscribing to: {self.image_topic}")
+        self.get_logger().info(f"Publishing cmd_vel: {self.cmd_vel_topic}")
         self.get_logger().info("Press 'q' in the OpenCV window to quit.")
-
-    @staticmethod
-    def clamp(x: float, lo: float, hi: float) -> float:
-        return max(lo, min(hi, x))
 
     def image_cb(self, msg: Image):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -84,37 +81,16 @@ class WhiteLineFollower(Node):
         y0 = int(h * self.roi_y_start)
         roi = frame[y0:h, 0:w]
 
-        # White detection in HSV
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        lower = np.array([self.h_low, self.s_low, self.v_low])
-        upper = np.array([self.h_high, self.s_high, self.v_high])
-        mask = cv2.inRange(hsv, lower, upper)
-
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-
-        M = cv2.moments(mask)
-        area = M["m00"]
+        mask = build_white_mask(roi, self.h_low, self.s_low, self.v_low,
+                                self.h_high, self.s_high, self.v_high)
+        cx, area = line_centroid(mask, self.min_area)
+        lin, ang = steering_command(cx, w, self.kp, self.max_angular,
+                                    self.linear_speed, self.search_linear, self.search_angular)
 
         twist = Twist()
-        cx = None
-        detected = False
-
-        if area > self.min_area:
-            cx = int(M["m10"] / area)  # centroid x in ROI
-            error = float(cx - (w // 2))  # +ve => line is to right
-
-            # P-controller steering
-            ang = -self.kp * error
-            ang = self.clamp(ang, -self.max_angular, self.max_angular)
-
-            twist.linear.x = self.linear_speed
-            twist.angular.z = ang
-            detected = True
-        else:
-            # Line lost: slow + search turn
-            twist.linear.x = self.search_linear
-            twist.angular.z = self.search_angular
+        twist.linear.x = lin
+        twist.angular.z = ang
+        detected = cx is not None
 
         self.cmd_pub.publish(twist)
 

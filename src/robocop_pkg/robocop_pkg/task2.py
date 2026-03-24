@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
+from robocop_pkg.line_detection_utils import build_white_mask
+
 
 class WhiteLineFollowerWithTurnAndBoxCount(Node):
     def __init__(self):
@@ -217,15 +219,6 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
     def right_range_cb(self, msg: Range):
         self.right_range = float(msg.range)
 
-    def build_white_mask(self, bgr_img):
-        hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
-        lower = np.array([self.h_low, self.s_low, self.v_low], dtype=np.uint8)
-        upper = np.array([self.h_high, self.s_high, self.v_high], dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        return mask
-
     def start_measurement(self):
         if self.measurement_started:
             return
@@ -344,7 +337,7 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
 
         y0 = int(h * self.roi_y_start)
         roi = frame[y0:h, 0:w]
-        mask = self.build_white_mask(roi)
+        mask = build_white_mask(roi, self.h_low, self.s_low, self.v_low, self.h_high, self.s_high, self.v_high)
 
         M = cv2.moments(mask)
         area = M["m00"]
@@ -352,7 +345,7 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         bh = int(h * self.bottom_strip_height_ratio)
         by0 = max(0, h - bh)
         bottom_roi = frame[by0:h, 0:w]
-        bottom_mask = self.build_white_mask(bottom_roi)
+        bottom_mask = build_white_mask(bottom_roi, self.h_low, self.s_low, self.v_low, self.h_high, self.s_high, self.v_high)
         Mb = cv2.moments(bottom_mask)
         bottom_area = Mb["m00"]
 

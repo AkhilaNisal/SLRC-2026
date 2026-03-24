@@ -18,6 +18,8 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
+from robocop_pkg.line_detection_utils import build_white_mask
+
 from robot_arm_interfaces.action import PickBox
 
 
@@ -455,15 +457,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
     def gyro_angle_cb(self, msg: Float32):
         self.current_yaw_deg = self.normalize_angle_deg(float(msg.data))
         self.gyro_ready = True
-
-    def build_white_mask(self, bgr_img):
-        hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
-        lower = np.array([self.h_low, self.s_low, self.v_low], dtype=np.uint8)
-        upper = np.array([self.h_high, self.s_high, self.v_high], dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        return mask
 
     def build_red_mask(self, bgr_img):
         hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
@@ -1045,7 +1038,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         y0 = int(h * self.roi_y_start)
         roi = frame[y0:h, 0:w]
-        mask = self.build_white_mask(roi)
+        mask = build_white_mask(roi, self.h_low, self.s_low, self.v_low, self.h_high, self.s_high, self.v_high)
 
         M = cv2.moments(mask)
         area = M["m00"]
@@ -1053,7 +1046,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         bh = int(h * self.bottom_strip_height_ratio)
         by0 = max(0, h - bh)
         bottom_roi = frame[by0:h, 0:w]
-        bottom_mask = self.build_white_mask(bottom_roi)
+        bottom_mask = build_white_mask(bottom_roi, self.h_low, self.s_low, self.v_low, self.h_high, self.s_high, self.v_high)
         Mb = cv2.moments(bottom_mask)
         bottom_area = Mb["m00"]
 
