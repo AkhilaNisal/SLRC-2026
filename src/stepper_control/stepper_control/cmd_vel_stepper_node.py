@@ -24,7 +24,7 @@ class StepperControlNode(Node):
         self.declare_parameter('max_steps_per_sec', 4000.0)
 
         self.declare_parameter('accel_steps_per_sec2', 3500.0)
-        self.declare_parameter('decel_steps_per_sec2', 3500.0)
+        self.declare_parameter('decel_steps_per_sec2', 15000.0)
         self.declare_parameter('cmd_vel_timeout', 0.2)
 
         self.declare_parameter('chip_name', 'gpiochip4')
