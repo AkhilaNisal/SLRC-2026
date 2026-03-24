@@ -1,0 +1,7 @@
+string side
+---
+bool success
+string message
+---
+string current_step
+float32 progress

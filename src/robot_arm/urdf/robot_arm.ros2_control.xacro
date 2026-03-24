@@ -1,14 +1,14 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-
+  
   <!-- Arm system -->
   <ros2_control name="Arm" type="system">
     <hardware>
     
-        <plugin>arduino_arm_hardware::ArduinoArmHardwareInterface</plugin>
-            <param name="port">/dev/ttyACM0</param>
-        <!-- <plugin>mock_components/GenericSystem</plugin> -->
+        <!-- <plugin>arduino_arm_hardware::ArduinoArmHardwareInterface</plugin>
+            <param name="port">/dev/ttyACM0</param> -->
+        <plugin>mock_components/GenericSystem</plugin>
 
     </hardware>
 

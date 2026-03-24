@@ -651,7 +651,8 @@ Solid {
 }
 
 Robot {
-  translation 0.75 -1.05 0
+  translation 1.2 1 0
+  rotation 0 0 1 1.57
   children [
     HingeJoint {
       jointParameters HingeJointParameters {
@@ -764,6 +765,24 @@ Robot {
         USE SENSOR
       ]
       name "ds_right"
+      lookupTable [
+        0    1020 0
+        0.2  800  0
+        0.5  400  0
+        1.0  0    0
+      ]
+      numberOfRays 1
+      aperture 0.05
+    }
+
+
+    DistanceSensor {
+      translation 0.045 0.0 0.033
+      rotation 0 1 0 0
+      children [
+        USE SENSOR
+      ]
+      name "ds_front"
       lookupTable [
         0    1020 0
         0.2  800  0

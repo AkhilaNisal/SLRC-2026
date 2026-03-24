@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <ros2_control name="ArmWithGripper" type="system">
+        <hardware>
+            <plugin>rpi_arm_hardware::RPiArmHardwareInterface</plugin>
+            <param name="host">127.0.0.1</param>
+            <param name="port">9999</param>
+        </hardware>
+
+        <joint name="base_rotating_waste_joint">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0.0</param>
+            </state_interface>
+        </joint>
+
+        <joint name="rotating_waste_arm1_joint">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0.0</param>
+            </state_interface>
+        </joint>
+
+        <joint name="arm1_arm2_joint">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0.0</param>
+            </state_interface>
+        </joint>
+
+        <joint name="arm2_gripper_base_joint">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0.0</param>
+            </state_interface>
+        </joint>
+
+        <joint name="gripper_base_left_joint">
+            <command_interface name="position"/>
+            <state_interface name="position">
+                <param name="initial_value">0.0</param>
+            </state_interface>
+        </joint>
+    </ros2_control>
+
+</robot>

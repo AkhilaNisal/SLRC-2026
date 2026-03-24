@@ -5,4 +5,4 @@ initial_positions:
   arm2_gripper_base_joint: 0
   base_rotating_waste_joint: 0
   gripper_base_left_gear_joint: 0
-  rotating_waste_arm1_joint: 0
+  rotating_waste_arm1_joint: 0 

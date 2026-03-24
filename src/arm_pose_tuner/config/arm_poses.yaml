@@ -1,0 +1,7 @@
+poses:
+  home:
+    base_rotating_waste_joint: 0.0
+    rotating_waste_arm1_joint: 0.6506
+    arm1_arm2_joint: -1.57
+    arm2_gripper_base_joint: -0.6506
+    
