@@ -117,6 +117,13 @@ def generate_launch_description():
     
     )
 
+    task1 = Node(
+        package='robocop_pkg',
+        executable='task1',
+        name='task1',
+        output='screen',
+    )
+
     task2_with_arm = Node(
         package='robocop_pkg',
         executable='task2_with_arm',   # must match setup.py entry point
@@ -165,8 +172,8 @@ def generate_launch_description():
         # task2_new,
         # task2_with_arm,
         # task3,
-        task_manager,
-
+        # task_manager,
+        task1,
 
         RegisterEventHandler(
             event_handler=OnProcessExit(

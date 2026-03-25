@@ -81,6 +81,13 @@ def generate_launch_description():
         output='screen',
     ) 
 
+    task1 = Node(
+        package='robocop_pkg',
+        executable='task1',
+        name='task1',
+        output='screen',
+    )
+
     task2_with_arm = Node(
         package='robocop_pkg',
         executable='task2_with_arm',   # must match setup.py entry point
@@ -137,7 +144,9 @@ def generate_launch_description():
             robot_arm_action_server,
             # task3,
             # task2_with_arm,
-            task_manager,
+            # task_manager,
+            task1,
+
 
         ]
     )
@@ -146,8 +155,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         mpu_node,
-        pca9685_bridge,
-        moveit_demo,
+        # pca9685_bridge,
+        # moveit_demo,
         camera_feed_node,
         tof_node,
         cmd_vel_stepper_node,
