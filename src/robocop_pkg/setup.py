@@ -57,6 +57,7 @@ setup(
             'servo_node = robocop_pkg.servo_node:main',
             'restore_test_client = robocop_pkg.restore_test_client:main',
             'pick_place_test_client = robocop_pkg.pick_place_test_client:main',
+            'robot_arm_centering_action_server = robocop_pkg.robot_arm_centering_action_server:main',
 
         ],
     },

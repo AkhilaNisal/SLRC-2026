@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 import math
 import time
+from typing import Optional, Tuple
 
+import cv2
+import numpy as np
 import rclpy
+from cv_bridge import CvBridge
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-
+from sensor_msgs.msg import Image
 from std_msgs.msg import Float32MultiArray
+
 from moveit.core.robot_state import RobotState
 from moveit.planning import MoveItPy, PlanningComponent
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -60,9 +67,12 @@ ROBOT_CONFIG = {
 }
 
 
-class RobotArmActionServer(Node):
+class RobotArmCenteringActionServer(Node):
     def __init__(self):
-        super().__init__("robot_arm_action_server")
+        super().__init__("robot_arm_centering_action_server")
+
+        self.action_cb_group = ReentrantCallbackGroup()
+        self.image_cb_group = ReentrantCallbackGroup()
 
         self.declare_parameter("action_name", "/pick_box")
         self.declare_parameter("startup_delay_sec", 1.0)
@@ -75,16 +85,26 @@ class RobotArmActionServer(Node):
         self.declare_parameter("arm_group", "robot_arm")
         self.declare_parameter("gripper_group", "gripper")
 
-        # Distance move topic/settings (must match cmd_vel_stepper_node reasonably)
         self.declare_parameter("cmd_distance_topic", "/cmd_distance")
-        self.declare_parameter("backward_distance_m", 0.05)           # 5 cm
+        self.declare_parameter("backward_distance_m", 0.05)
         self.declare_parameter("distance_motion_extra_wait_sec", 0.3)
 
-        # These are used only to estimate how long the /cmd_distance move will take
         self.declare_parameter("wheel_radius", 0.0325)
         self.declare_parameter("steps_per_rev", 200)
         self.declare_parameter("microsteps", 16)
         self.declare_parameter("distance_mode_sps", 800.0)
+
+        self.declare_parameter("image_topic", "/camera/image/image_color")
+        self.declare_parameter("show_debug", False)
+        self.declare_parameter("center_timeout_sec", 8.0)
+        self.declare_parameter("center_deadband_px", 18.0)
+        self.declare_parameter("center_joint1_gain", 0.0008)
+        self.declare_parameter("center_joint1_max_step_rad", 0.05)
+        self.declare_parameter("center_joint1_min_step_rad", 0.01)
+        self.declare_parameter("max_center_iterations", 20)
+        self.declare_parameter("image_stale_timeout_sec", 0.5)
+        self.declare_parameter("red_min_area", 600.0)
+        self.declare_parameter("blue_min_area", 150.0)
 
         self.action_name = str(self.get_parameter("action_name").value)
         self.startup_delay_sec = float(self.get_parameter("startup_delay_sec").value)
@@ -108,6 +128,24 @@ class RobotArmActionServer(Node):
         self.microsteps = int(self.get_parameter("microsteps").value)
         self.distance_mode_sps = float(self.get_parameter("distance_mode_sps").value)
 
+        self.image_topic = str(self.get_parameter("image_topic").value)
+        self.show_debug = bool(self.get_parameter("show_debug").value)
+        self.center_timeout_sec = float(self.get_parameter("center_timeout_sec").value)
+        self.center_deadband_px = float(self.get_parameter("center_deadband_px").value)
+        self.center_joint1_gain = float(self.get_parameter("center_joint1_gain").value)
+        self.center_joint1_max_step_rad = float(
+            self.get_parameter("center_joint1_max_step_rad").value
+        )
+        self.center_joint1_min_step_rad = float(
+            self.get_parameter("center_joint1_min_step_rad").value
+        )
+        self.max_center_iterations = int(self.get_parameter("max_center_iterations").value)
+        self.image_stale_timeout_sec = float(
+            self.get_parameter("image_stale_timeout_sec").value
+        )
+        self.red_min_area = float(self.get_parameter("red_min_area").value)
+        self.blue_min_area = float(self.get_parameter("blue_min_area").value)
+
         self.steps_per_mech_rev = self.steps_per_rev * self.microsteps
         self.wheel_circumference = 2.0 * math.pi * self.wheel_radius
         self.meters_per_step = self.wheel_circumference / float(self.steps_per_mech_rev)
@@ -118,72 +156,67 @@ class RobotArmActionServer(Node):
             "arm1_arm2_joint",
             "arm2_gripper_base_joint",
         ]
-
         self.gripper_joint_names = [
             "gripper_base_left_joint",
         ]
 
-        # home = [20, 37, -72, 53]
         self.declare_parameter("home.base_rotating_waste_joint", 0.3491)
         self.declare_parameter("home.rotating_waste_arm1_joint", 0.6458)
         self.declare_parameter("home.arm1_arm2_joint", -1.2566)
         self.declare_parameter("home.arm2_gripper_base_joint", 0.9250)
 
-        # grab = [5, 56, 40, -79]
+        # New pose for centering view
+        # For now same as lift, you can change later
+        self.declare_parameter("before_grab.base_rotating_waste_joint", 0.0873)
+        self.declare_parameter("before_grab.rotating_waste_arm1_joint", 0.8854)
+        self.declare_parameter("before_grab.arm1_arm2_joint", 0.6981)
+        self.declare_parameter("before_grab.arm2_gripper_base_joint", -1.4137)
+
         self.declare_parameter("grab.base_rotating_waste_joint", 0.0873)
         self.declare_parameter("grab.rotating_waste_arm1_joint", 0.9774)
         self.declare_parameter("grab.arm1_arm2_joint", 0.6981)
         self.declare_parameter("grab.arm2_gripper_base_joint", -1.3788)
 
-        # lift = [5, 45, 40, -81]
         self.declare_parameter("lift.base_rotating_waste_joint", 0.0873)
         self.declare_parameter("lift.rotating_waste_arm1_joint", 0.7854)
         self.declare_parameter("lift.arm1_arm2_joint", 0.6981)
         self.declare_parameter("lift.arm2_gripper_base_joint", -1.4137)
 
-        # place1 = [-16, 12, -100, 67]
         self.declare_parameter("place1.base_rotating_waste_joint", -0.2793)
         self.declare_parameter("place1.rotating_waste_arm1_joint", 0.2094)
         self.declare_parameter("place1.arm1_arm2_joint", -1.7453)
         self.declare_parameter("place1.arm2_gripper_base_joint", 1.1694)
 
-        # place2 = [23, -4, -92, 75]
         self.declare_parameter("place2.base_rotating_waste_joint", 0.4014)
         self.declare_parameter("place2.rotating_waste_arm1_joint", -0.0698)
         self.declare_parameter("place2.arm1_arm2_joint", -1.6057)
         self.declare_parameter("place2.arm2_gripper_base_joint", 1.3090)
 
-        # place3 = [60, 16, -79, 81]
         self.declare_parameter("place3.base_rotating_waste_joint", 1.0472)
         self.declare_parameter("place3.rotating_waste_arm1_joint", 0.2793)
         self.declare_parameter("place3.arm1_arm2_joint", -1.3788)
         self.declare_parameter("place3.arm2_gripper_base_joint", 1.4137)
 
-        # place4 = same as place1
         self.declare_parameter("place4.base_rotating_waste_joint", -0.2793)
         self.declare_parameter("place4.rotating_waste_arm1_joint", 0.2094)
         self.declare_parameter("place4.arm1_arm2_joint", -1.7453)
         self.declare_parameter("place4.arm2_gripper_base_joint", 1.1694)
 
-        # place5 = same as place2
         self.declare_parameter("place5.base_rotating_waste_joint", 0.4014)
         self.declare_parameter("place5.rotating_waste_arm1_joint", -0.0698)
         self.declare_parameter("place5.arm1_arm2_joint", -1.6057)
         self.declare_parameter("place5.arm2_gripper_base_joint", 1.3090)
 
-        # place6 = same as place3
         self.declare_parameter("place6.base_rotating_waste_joint", 1.0472)
         self.declare_parameter("place6.rotating_waste_arm1_joint", 0.2793)
         self.declare_parameter("place6.arm1_arm2_joint", -1.3788)
         self.declare_parameter("place6.arm2_gripper_base_joint", 1.4137)
 
-        # restore = [-5, 76, 45, 35]
         self.declare_parameter("restore.base_rotating_waste_joint", -0.0873)
         self.declare_parameter("restore.rotating_waste_arm1_joint", 1.3265)
         self.declare_parameter("restore.arm1_arm2_joint", 0.7854)
         self.declare_parameter("restore.arm2_gripper_base_joint", 0.6109)
- 
-        # gripper
+
         self.declare_parameter("gripper_open.gripper_base_left_joint", -0.1)
         self.declare_parameter("gripper_close.gripper_base_left_joint", -0.9144)
 
@@ -192,15 +225,26 @@ class RobotArmActionServer(Node):
         self.restore_box_count = int(self.get_parameter("restore_box_count").value)
         self.placed_box_count = 0
 
+        self.bridge = CvBridge()
+        self.latest_frame: Optional[np.ndarray] = None
+        self.latest_frame_time: Optional[float] = None
+
         self.cmd_distance_pub = self.create_publisher(
             Float32MultiArray,
             self.cmd_distance_topic,
             10
         )
 
+        self.image_sub = self.create_subscription(
+            Image,
+            self.image_topic,
+            self.image_callback,
+            10,
+            callback_group=self.image_cb_group
+        )
+
         self.get_logger().info("Initializing MoveItPy...")
         self.robot = MoveItPy(node_name="moveit_py", config_dict=ROBOT_CONFIG)
-
         self.arm: PlanningComponent = self.robot.get_planning_component(self.arm_group)
         self.gripper: PlanningComponent = self.robot.get_planning_component(self.gripper_group)
 
@@ -211,22 +255,26 @@ class RobotArmActionServer(Node):
             execute_callback=self.execute_callback,
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
+            callback_group=self.action_cb_group,
         )
 
-        self.get_logger().info(f"Robot arm action server started on {self.action_name}")
-        self.get_logger().info(f"Arm joints: {self.arm_joint_names}")
-        self.get_logger().info(f"Gripper joints: {self.gripper_joint_names}")
+        self.get_logger().info(f"Centering action server started on {self.action_name}")
+        self.get_logger().info(f"Node name: {self.get_name()}")
+        self.get_logger().info(f"Image topic: {self.image_topic}")
         self.get_logger().info(f"cmd_distance_topic: {self.cmd_distance_topic}")
-        self.get_logger().info(
-            f"distance estimate: meters_per_step={self.meters_per_step:.8f}, "
-            f"distance_mode_sps={self.distance_mode_sps:.1f}"
-        )
 
         self._startup_done = False
         self._startup_timer = self.create_timer(
             self.startup_delay_sec,
             self.startup_move_home_once
         )
+
+    def image_callback(self, msg: Image):
+        try:
+            self.latest_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            self.latest_frame_time = time.monotonic()
+        except Exception as exc:
+            self.get_logger().error(f"Image conversion failed: {exc}")
 
     def goal_callback(self, goal_request):
         self.get_logger().info(f"Received PickBox goal: side={goal_request.side}")
@@ -243,16 +291,16 @@ class RobotArmActionServer(Node):
         goal_handle.publish_feedback(feedback)
 
     def get_arm_joint_dict(self, prefix: str) -> dict:
-        values = {}
-        for joint_name in self.arm_joint_names:
-            values[joint_name] = float(self.get_parameter(f"{prefix}.{joint_name}").value)
-        return values
+        return {
+            joint_name: float(self.get_parameter(f"{prefix}.{joint_name}").value)
+            for joint_name in self.arm_joint_names
+        }
 
     def get_gripper_joint_dict(self, prefix: str) -> dict:
-        values = {}
-        for joint_name in self.gripper_joint_names:
-            values[joint_name] = float(self.get_parameter(f"{prefix}.{joint_name}").value)
-        return values
+        return {
+            joint_name: float(self.get_parameter(f"{prefix}.{joint_name}").value)
+            for joint_name in self.gripper_joint_names
+        }
 
     def _sleep_with_cancel_check(self, goal_handle, duration_sec: float) -> bool:
         start = time.monotonic()
@@ -268,7 +316,12 @@ class RobotArmActionServer(Node):
             return 0.0
         return step_count / self.distance_mode_sps
 
-    def move_base_by_distance(self, goal_handle, left_distance_m: float, right_distance_m: float) -> bool:
+    def move_base_by_distance(
+        self,
+        goal_handle,
+        left_distance_m: float,
+        right_distance_m: float
+    ) -> bool:
         msg = Float32MultiArray()
         msg.data = [float(left_distance_m), float(right_distance_m)]
 
@@ -280,13 +333,9 @@ class RobotArmActionServer(Node):
             f"Publishing cmd_distance: left={left_distance_m:.4f} m, "
             f"right={right_distance_m:.4f} m, estimated_wait={wait_time:.3f} s"
         )
-
         self.cmd_distance_pub.publish(msg)
 
-        if not self._sleep_with_cancel_check(goal_handle, wait_time):
-            return False
-
-        return True
+        return self._sleep_with_cancel_check(goal_handle, wait_time)
 
     def move_base_backward(self, goal_handle) -> bool:
         d = abs(self.backward_distance_m)
@@ -304,10 +353,13 @@ class RobotArmActionServer(Node):
 
             plan_result = self.arm.plan()
             if not plan_result:
-                self.get_logger().error(f"Planning failed for arm joint target '{label}'")
+                self.get_logger().error(f"Planning failed for arm target '{label}'")
                 return False
 
-            self.robot.execute(plan_result.trajectory, controllers=["robot_arm_controller"])
+            self.robot.execute(
+                plan_result.trajectory,
+                controllers=["robot_arm_controller"]
+            )
             time.sleep(self.step_pause_sec)
 
             joint_str = ", ".join([f"{k}={v:.4f}" for k, v in joint_values.items()])
@@ -330,10 +382,13 @@ class RobotArmActionServer(Node):
 
             plan_result = self.gripper.plan()
             if not plan_result:
-                self.get_logger().error(f"Planning failed for gripper joint target '{label}'")
+                self.get_logger().error(f"Planning failed for gripper target '{label}'")
                 return False
 
-            self.robot.execute(plan_result.trajectory, controllers=["gripper_controller"])
+            self.robot.execute(
+                plan_result.trajectory,
+                controllers=["gripper_controller"]
+            )
             time.sleep(self.step_pause_sec)
 
             joint_str = ", ".join([f"{k}={v:.4f}" for k, v in joint_values.items()])
@@ -344,7 +399,12 @@ class RobotArmActionServer(Node):
             self.get_logger().error(f"Exception in move_gripper_joint_values('{label}'): {exc}")
             return False
 
-    def move_arm_joint_values_with_retry(self, joint_values: dict, label: str, retries: int = None) -> bool:
+    def move_arm_joint_values_with_retry(
+        self,
+        joint_values: dict,
+        label: str,
+        retries: Optional[int] = None
+    ) -> bool:
         if retries is None:
             retries = self.retry_count
 
@@ -362,7 +422,12 @@ class RobotArmActionServer(Node):
         self.get_logger().error(f"All retries failed for arm target '{label}'")
         return False
 
-    def move_gripper_joint_values_with_retry(self, joint_values: dict, label: str, retries: int = None) -> bool:
+    def move_gripper_joint_values_with_retry(
+        self,
+        joint_values: dict,
+        label: str,
+        retries: Optional[int] = None
+    ) -> bool:
         if retries is None:
             retries = self.retry_count
 
@@ -419,17 +484,14 @@ class RobotArmActionServer(Node):
     def startup_move_home_once(self):
         if self._startup_done:
             return
-
         self._startup_done = True
         self._startup_timer.cancel()
 
         self.get_logger().info("Startup: move arm to home, gripper to open")
-
         home_joints = self.get_arm_joint_dict("home")
 
         if not self.move_arm_joint_values_with_retry(home_joints, "home"):
             self.get_logger().warn("Startup home failed")
-
         if not self.open_gripper():
             self.get_logger().warn("Startup gripper_open failed")
 
@@ -437,20 +499,247 @@ class RobotArmActionServer(Node):
         pose_index = min(self.placed_box_count + 1, self.max_box_count)
         return f"place{pose_index}"
 
+    def get_latest_frame(self) -> Optional[np.ndarray]:
+        if self.latest_frame is None or self.latest_frame_time is None:
+            return None
+        if (time.monotonic() - self.latest_frame_time) > self.image_stale_timeout_sec:
+            return None
+        return self.latest_frame.copy()
+
+    def detect_red_box_and_blue_fingers(
+        self,
+        frame: np.ndarray
+    ) -> Tuple[bool, Optional[float], np.ndarray, bool]:
+        debug = frame.copy()
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        lower_red_1 = np.array([0, 120, 70], dtype=np.uint8)
+        upper_red_1 = np.array([10, 255, 255], dtype=np.uint8)
+        lower_red_2 = np.array([170, 120, 70], dtype=np.uint8)
+        upper_red_2 = np.array([180, 255, 255], dtype=np.uint8)
+
+        red_mask_1 = cv2.inRange(hsv, lower_red_1, upper_red_1)
+        red_mask_2 = cv2.inRange(hsv, lower_red_2, upper_red_2)
+        red_mask = cv2.bitwise_or(red_mask_1, red_mask_2)
+
+        lower_blue = np.array([90, 80, 40], dtype=np.uint8)
+        upper_blue = np.array([140, 255, 255], dtype=np.uint8)
+        blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
+
+        kernel = np.ones((5, 5), np.uint8)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
+
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel)
+
+        red_contours, _ = cv2.findContours(
+            red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        blue_contours, _ = cv2.findContours(
+            blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        red_contours = [
+            c for c in red_contours if cv2.contourArea(c) >= self.red_min_area
+        ]
+        blue_contours = [
+            c for c in blue_contours if cv2.contourArea(c) >= self.blue_min_area
+        ]
+
+        if not red_contours:
+            cv2.putText(
+                debug, "No red box", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                0.7, (0, 0, 255), 2
+            )
+            return False, None, debug, False
+
+        largest_red = max(red_contours, key=cv2.contourArea)
+        red_m = cv2.moments(largest_red)
+        if red_m["m00"] <= 0:
+            return False, None, debug, False
+
+        red_cx = int(red_m["m10"] / red_m["m00"])
+        red_cy = int(red_m["m01"] / red_m["m00"])
+
+        gripper_center_x = None
+        blue_seen = len(blue_contours) > 0
+
+        if len(blue_contours) >= 2:
+            blue_sorted = sorted(blue_contours, key=cv2.contourArea, reverse=True)[:2]
+            blue_centers = []
+            for c in blue_sorted:
+                m = cv2.moments(c)
+                if m["m00"] > 0:
+                    cx = int(m["m10"] / m["m00"])
+                    cy = int(m["m01"] / m["m00"])
+                    blue_centers.append((cx, cy))
+                    cv2.circle(debug, (cx, cy), 6, (255, 0, 0), -1)
+
+            if len(blue_centers) == 2:
+                gripper_center_x = (blue_centers[0][0] + blue_centers[1][0]) / 2.0
+
+        elif len(blue_contours) == 1:
+            m = cv2.moments(blue_contours[0])
+            if m["m00"] > 0:
+                gripper_center_x = float(m["m10"] / m["m00"])
+
+        if gripper_center_x is None:
+            cv2.putText(
+                debug, "No blue fingers", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                0.7, (0, 0, 255), 2
+            )
+            return False, None, debug, blue_seen
+
+        error_px = float(red_cx - gripper_center_x)
+
+        cv2.drawContours(debug, [largest_red], -1, (0, 255, 0), 2)
+        cv2.circle(debug, (red_cx, red_cy), 6, (0, 0, 255), -1)
+        cv2.line(
+            debug,
+            (int(gripper_center_x), 0),
+            (int(gripper_center_x), debug.shape[0]),
+            (255, 0, 0),
+            2
+        )
+        cv2.line(
+            debug,
+            (red_cx, 0),
+            (red_cx, debug.shape[0]),
+            (0, 0, 255),
+            2
+        )
+        cv2.putText(
+            debug,
+            f"error_px={error_px:.1f}",
+            (10, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2
+        )
+
+        return True, error_px, debug, blue_seen
+
+    def center_box_with_joint1(self, goal_handle) -> Tuple[bool, Optional[float]]:
+        before_grab_pose = self.get_arm_joint_dict("before_grab")
+
+        self.get_logger().info("CENTERING STATUS: ONGOING - moving to before_grab pose")
+        self.publish_feedback(goal_handle, "move_before_grab_pose", 0.18)
+        if not self.move_arm_joint_values_with_retry(before_grab_pose, "before_grab"):
+            self.get_logger().error("CENTERING STATUS: FAILED - before_grab move failed")
+            return False, None
+
+        self.publish_feedback(goal_handle, "center_open_gripper", 0.22)
+        if not self.open_gripper():
+            self.get_logger().error("CENTERING STATUS: FAILED - gripper open failed")
+            return False, None
+
+        if self.latest_frame is None:
+            self.get_logger().warn("No image received yet before centering starts")
+        else:
+            self.get_logger().info("Have camera frame before centering")
+
+        current_joint1 = before_grab_pose["base_rotating_waste_joint"]
+        start_time = time.monotonic()
+        processed_iterations = 0
+
+        while processed_iterations < self.max_center_iterations:
+            if goal_handle.is_cancel_requested:
+                self.get_logger().warn("CENTERING STATUS: FAILED - canceled")
+                return False, None
+
+            if (time.monotonic() - start_time) > self.center_timeout_sec:
+                self.get_logger().error("CENTERING STATUS: FAILED - timeout")
+                return False, None
+
+            frame = self.get_latest_frame()
+            if frame is None:
+                self.get_logger().warn("CENTERING STATUS: ONGOING - no fresh camera frame")
+                time.sleep(0.05)
+                continue
+
+            processed_iterations += 1
+
+            visible, error_px, debug, blue_seen = self.detect_red_box_and_blue_fingers(frame)
+
+            if self.show_debug:
+                cv2.imshow("centering_debug", debug)
+                cv2.waitKey(1)
+
+            if not blue_seen:
+                self.get_logger().warn(
+                    f"CENTERING STATUS: ONGOING - no blue patches detected "
+                    f"(iteration {processed_iterations}/{self.max_center_iterations})"
+                )
+                time.sleep(0.05)
+                continue
+
+            if not visible or error_px is None:
+                self.get_logger().warn(
+                    f"CENTERING STATUS: ONGOING - red box / gripper center not usable "
+                    f"(iteration {processed_iterations}/{self.max_center_iterations})"
+                )
+                time.sleep(0.05)
+                continue
+
+            self.get_logger().info(
+                f"CENTERING STATUS: ONGOING - iteration {processed_iterations}/"
+                f"{self.max_center_iterations}, error_px={error_px:.1f}"
+            )
+
+            if abs(error_px) <= self.center_deadband_px:
+                self.get_logger().info("CENTERING STATUS: COMPLETED")
+                return True, current_joint1
+
+            delta = -self.center_joint1_gain * error_px
+            delta = max(-self.center_joint1_max_step_rad, min(self.center_joint1_max_step_rad, delta))
+
+            if abs(delta) < self.center_joint1_min_step_rad:
+                delta = math.copysign(self.center_joint1_min_step_rad, delta)
+
+            current_joint1 += delta
+
+            centered_pose = dict(before_grab_pose)
+            centered_pose["base_rotating_waste_joint"] = current_joint1
+
+            self.publish_feedback(
+                goal_handle,
+                f"center_adjust_joint1_{processed_iterations}",
+                0.22 + min(
+                    0.18,
+                    0.18 * processed_iterations / max(1, self.max_center_iterations)
+                )
+            )
+
+            if not self.move_arm_joint_values(centered_pose, f"center_adjust_{processed_iterations}"):
+                self.get_logger().error("CENTERING STATUS: FAILED - center adjustment move failed")
+                return False, None
+
+        self.get_logger().error("CENTERING STATUS: FAILED - max iterations reached")
+        return False, None
+
     def do_pick_place_sequence(self, goal_handle, side: str, place_prefix: str):
         home_joints = self.get_arm_joint_dict("home")
         grab_joints = self.get_arm_joint_dict("grab")
         lift_joints = self.get_arm_joint_dict("lift")
         place_joints = self.get_arm_joint_dict(place_prefix)
 
-        self.publish_feedback(goal_handle, "gripper_open", 0.10)
-        if not self.open_gripper():
-            return self.fail_result(goal_handle, "Failed at step: gripper_open")
+        self.publish_feedback(goal_handle, "start_centering", 0.08)
+        centered_ok, centered_joint1 = self.center_box_with_joint1(goal_handle)
+        if not centered_ok or centered_joint1 is None:
+            return self.fail_result(goal_handle, "Failed at step: centering")
         if goal_handle.is_cancel_requested:
-            return self.canceled_result(goal_handle, "Goal canceled after gripper_open")
+            return self.canceled_result(goal_handle, "Goal canceled after centering")
+
+        centered_grab = dict(grab_joints)
+        centered_grab["base_rotating_waste_joint"] = centered_joint1
+
+        centered_lift = dict(lift_joints)
+        centered_lift["base_rotating_waste_joint"] = centered_joint1
 
         self.publish_feedback(goal_handle, "move_grab_pose", 0.25)
-        if not self.move_arm_joint_values_with_retry(grab_joints, "grab"):
+        if not self.move_arm_joint_values_with_retry(centered_grab, "grab_centered"):
             return self.fail_result(goal_handle, "Failed at step: grab")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after grab")
@@ -462,7 +751,7 @@ class RobotArmActionServer(Node):
             return self.canceled_result(goal_handle, "Goal canceled after gripper_close")
 
         self.publish_feedback(goal_handle, "move_lift_pose", 0.55)
-        if not self.move_arm_joint_values_with_retry(lift_joints, "lift"):
+        if not self.move_arm_joint_values_with_retry(centered_lift, "lift_centered"):
             return self.fail_result(goal_handle, "Failed at step: lift")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after lift")
@@ -494,14 +783,13 @@ class RobotArmActionServer(Node):
 
         return self.success_result(
             goal_handle,
-            f"Pick and place completed successfully for side={side}, "
+            f"Centered pick and place completed successfully for side={side}, "
             f"placed_box_count={self.placed_box_count}"
         )
 
     def do_restore_sequence(self, goal_handle):
         home_joints = self.get_arm_joint_dict("home")
         restore_joints = self.get_arm_joint_dict("restore")
-
         restore_count = max(1, min(self.restore_box_count, self.max_box_count))
 
         self.get_logger().info(
@@ -531,9 +819,6 @@ class RobotArmActionServer(Node):
                     f"Restore failed: gripper_open before {place_prefix}"
                 )
 
-            if goal_handle.is_cancel_requested:
-                return self.canceled_result(goal_handle, f"Restore canceled before move to {place_prefix}")
-
             major_step += 1
             self.publish_feedback(
                 goal_handle,
@@ -542,9 +827,6 @@ class RobotArmActionServer(Node):
             )
             if not self.move_arm_joint_values_with_retry(place_joints, place_prefix):
                 return self.fail_result(goal_handle, f"Restore failed: move to {place_prefix}")
-
-            if goal_handle.is_cancel_requested:
-                return self.canceled_result(goal_handle, f"Restore canceled at {place_prefix}")
 
             major_step += 1
             self.publish_feedback(
@@ -558,9 +840,6 @@ class RobotArmActionServer(Node):
                     f"Restore failed: gripper_close at {place_prefix}"
                 )
 
-            if goal_handle.is_cancel_requested:
-                return self.canceled_result(goal_handle, f"Restore canceled after closing at {place_prefix}")
-
             major_step += 1
             self.publish_feedback(
                 goal_handle,
@@ -572,9 +851,6 @@ class RobotArmActionServer(Node):
                     goal_handle,
                     f"Restore failed: move to restore from {place_prefix}"
                 )
-
-            if goal_handle.is_cancel_requested:
-                return self.canceled_result(goal_handle, f"Restore canceled at restore from {place_prefix}")
 
             major_step += 1
             self.publish_feedback(
@@ -610,7 +886,7 @@ class RobotArmActionServer(Node):
         place_prefix = self.get_current_place_prefix()
 
         self.get_logger().info(
-            f"Executing pick-place sequence for side={side}, "
+            f"Executing centered pick-place sequence for side={side}, "
             f"target_place={place_prefix}, placed_box_count={self.placed_box_count}"
         )
 
@@ -622,10 +898,18 @@ class RobotArmActionServer(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = RobotArmActionServer()
+    node = RobotArmCenteringActionServer()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
     finally:
+        if node.show_debug:
+            cv2.destroyAllWindows()
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
