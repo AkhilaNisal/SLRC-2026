@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'front_stop_node = robot_test.front_stop_node:main',
+            'front_stop_pick_place_test = robot_test.front_stop_pick_place_test:main',
         ],
     },
 )
