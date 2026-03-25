@@ -74,6 +74,14 @@ def generate_launch_description():
         }]
     )
 
+    robot_arm_centering_action_server = Node(
+        package='robocop_pkg',
+        executable='robot_arm_centering_action_server',
+        name='robot_arm_centering_action_server',
+        output='screen',
+
+    )
+
     tof_node = Node(
         package='tof_sensors',
         executable='tof_node',
@@ -141,7 +149,8 @@ def generate_launch_description():
     delayed_task_nodes = TimerAction(
         period=8.0,
         actions=[
-            robot_arm_action_server,
+            # robot_arm_action_server,
+            robot_arm_centering_action_server,
             # task3,
             # task2_with_arm,
             # task_manager,
