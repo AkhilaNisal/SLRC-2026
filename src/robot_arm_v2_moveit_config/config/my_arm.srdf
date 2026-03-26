@@ -43,11 +43,11 @@
   </group_state>
 
   <group_state name="gripper_close" group="gripper">
-    <joint name="gripper_base_left_joint" value="-0.9144"/>
+    <joint name="gripper_base_left_joint" value="0.6"/>
   </group_state>
 
   <group_state name="gripper_open" group="gripper">
-    <joint name="gripper_base_left_joint" value="-0.1"/>
+    <joint name="gripper_base_left_joint" value="-0.6"/>
   </group_state>
 
   <end_effector name="robot_end_effector" parent_link="gripper_base_link" group="robot_arm"/>
