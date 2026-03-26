@@ -67,7 +67,7 @@ class Task1MazeNode(Node):
         self.declare_parameter('wall_clear_distance', 0.35)
         self.declare_parameter('turn_open_distance', 0.34)
         self.declare_parameter('min_valid_range', 0.04)
-        self.declare_parameter('max_valid_range', 1.50)
+        self.declare_parameter('max_valid_range', 10)
         self.declare_parameter('wall_loss_confirm_cycles', 5)
 
         # =========================
@@ -115,6 +115,18 @@ class Task1MazeNode(Node):
         # =========================
         self.declare_parameter('decision_required_samples', 5)
         self.declare_parameter('decision_filter_alpha', 0.35)
+
+        # =========================
+        # Feed-forward wall escape
+        # =========================
+        self.declare_parameter('ff_enabled', True)
+        self.declare_parameter('ff_trigger_delta', 0.006)          # m per cycle trend threshold
+        self.declare_parameter('ff_trigger_cycles', 3)             # consecutive toward-wall cycles
+        self.declare_parameter('ff_turn_mag', 0.18)                # fixed angular pulse
+        self.declare_parameter('ff_hold_cycles', 6)                # pulse duration
+        self.declare_parameter('ff_cooldown_cycles', 8)            # delay before re-arm
+        self.declare_parameter('ff_front_min_distance', 0.32)      # disable near front obstacle
+        self.declare_parameter('ff_edge_lock_block', True)         # avoid triggering during edge lock
 
         # =========================
         # Debug
@@ -190,6 +202,15 @@ class Task1MazeNode(Node):
         self.decision_required_samples = int(self.get_parameter('decision_required_samples').value)
         self.decision_filter_alpha = float(self.get_parameter('decision_filter_alpha').value)
 
+        self.ff_enabled = bool(self.get_parameter('ff_enabled').value)
+        self.ff_trigger_delta = float(self.get_parameter('ff_trigger_delta').value)
+        self.ff_trigger_cycles = int(self.get_parameter('ff_trigger_cycles').value)
+        self.ff_turn_mag = float(self.get_parameter('ff_turn_mag').value)
+        self.ff_hold_cycles = int(self.get_parameter('ff_hold_cycles').value)
+        self.ff_cooldown_cycles = int(self.get_parameter('ff_cooldown_cycles').value)
+        self.ff_front_min_distance = float(self.get_parameter('ff_front_min_distance').value)
+        self.ff_edge_lock_block = bool(self.get_parameter('ff_edge_lock_block').value)
+
         self.debug_logs = bool(self.get_parameter('debug_logs').value)
         self.debug_every_n_cycles = int(self.get_parameter('debug_every_n_cycles').value)
 
@@ -251,6 +272,15 @@ class Task1MazeNode(Node):
         self.right_decision_range = None
         self.left_decision_samples = 0
         self.right_decision_samples = 0
+
+        # Feed-forward tracking
+        self.prev_left_ff_range = None
+        self.prev_right_ff_range = None
+        self.left_toward_wall_count = 0
+        self.right_toward_wall_count = 0
+        self.ff_active_dir = TurnDir.NONE
+        self.ff_hold_counter = 0
+        self.ff_cooldown_counter = 0
 
         # Debug state
         self.debug_cycle_counter = 0
@@ -380,23 +410,19 @@ class Task1MazeNode(Node):
             f'lockL={self.left_edge_locked} lockR={self.right_edge_locked}'
         )
 
-        # Release both locks
         self.left_edge_locked = False
         self.right_edge_locked = False
 
-        # Throw away old side values so decision cannot use stale readings
         self.left_range = None
         self.right_range = None
         self.left_valid = False
         self.right_valid = False
 
-        # Clear wall state memory for decision phase
         self.left_wall_present = False
         self.right_wall_present = False
         self.left_loss_counter = 0
         self.right_loss_counter = 0
 
-        # Reset fresh decision accumulators
         self.left_decision_range = None
         self.right_decision_range = None
         self.left_decision_samples = 0
@@ -462,7 +488,6 @@ class Task1MazeNode(Node):
                 self.left_decision_range, r, self.decision_filter_alpha
             )
             self.left_decision_samples += 1
-
             self.left_range = self.left_decision_range
             self.left_valid = True
 
@@ -531,7 +556,6 @@ class Task1MazeNode(Node):
                 self.right_decision_range, r, self.decision_filter_alpha
             )
             self.right_decision_samples += 1
-
             self.right_range = self.right_decision_range
             self.right_valid = True
 
@@ -655,6 +679,117 @@ class Task1MazeNode(Node):
             heading_term *= self.heading_weight_missing
 
         return heading_term
+
+    # ============================================================
+    # Feed-forward wall escape
+    # ============================================================
+    def reset_ff_trackers(self):
+        self.left_toward_wall_count = 0
+        self.right_toward_wall_count = 0
+        self.prev_left_ff_range = self.left_range
+        self.prev_right_ff_range = self.right_range
+
+    def can_use_ff(self):
+        if not self.ff_enabled:
+            return False
+        if not self.front_valid or self.front_range is None:
+            return False
+        if self.front_range <= self.ff_front_min_distance:
+            return False
+        if self.ff_cooldown_counter > 0:
+            return False
+        return True
+
+    def start_ff_pulse(self, direction: TurnDir, reason: str):
+        self.ff_active_dir = direction
+        self.ff_hold_counter = self.ff_hold_cycles
+        self.ff_cooldown_counter = self.ff_cooldown_cycles
+        self.debug_print(f'[FF_START] dir={direction.value} reason={reason}')
+
+    def compute_feedforward_term(self):
+        # keep active pulse running first
+        if self.ff_hold_counter > 0:
+            self.ff_hold_counter -= 1
+
+            if self.ff_active_dir == TurnDir.RIGHT:
+                ang = -self.ff_turn_mag
+            elif self.ff_active_dir == TurnDir.LEFT:
+                ang = self.ff_turn_mag
+            else:
+                ang = 0.0
+
+            if self.ff_hold_counter == 0:
+                self.debug_print(f'[FF_END] dir={self.ff_active_dir.value}')
+                self.ff_active_dir = TurnDir.NONE
+
+            return ang
+
+        if self.ff_cooldown_counter > 0:
+            self.ff_cooldown_counter -= 1
+
+        left = self.left_wall_present and self.left_valid and self.left_range is not None
+        right = self.right_wall_present and self.right_valid and self.right_range is not None
+
+        if self.ff_edge_lock_block:
+            if self.left_edge_locked:
+                left = False
+            if self.right_edge_locked:
+                right = False
+
+        if not self.can_use_ff():
+            self.reset_ff_trackers()
+            return 0.0
+
+        # exactly one wall visible -> detect drift toward that wall
+        if left and not right:
+            if self.prev_left_ff_range is not None:
+                if self.left_range < (self.prev_left_ff_range - self.ff_trigger_delta):
+                    self.left_toward_wall_count += 1
+                else:
+                    self.left_toward_wall_count = max(0, self.left_toward_wall_count - 1)
+
+            self.prev_left_ff_range = self.left_range
+            self.prev_right_ff_range = self.right_range
+            self.right_toward_wall_count = 0
+
+            self.debug_periodic(
+                f'[FF_MONITOR_LEFT] left={self.fmt(self.left_range)} '
+                f'prev={self.fmt(self.prev_left_ff_range)} count={self.left_toward_wall_count}'
+            )
+
+            if self.left_toward_wall_count >= self.ff_trigger_cycles:
+                self.left_toward_wall_count = 0
+                self.start_ff_pulse(TurnDir.RIGHT, 'pushing_toward_left_wall')
+                return -self.ff_turn_mag
+
+            return 0.0
+
+        if right and not left:
+            if self.prev_right_ff_range is not None:
+                if self.right_range < (self.prev_right_ff_range - self.ff_trigger_delta):
+                    self.right_toward_wall_count += 1
+                else:
+                    self.right_toward_wall_count = max(0, self.right_toward_wall_count - 1)
+
+            self.prev_right_ff_range = self.right_range
+            self.prev_left_ff_range = self.left_range
+            self.left_toward_wall_count = 0
+
+            self.debug_periodic(
+                f'[FF_MONITOR_RIGHT] right={self.fmt(self.right_range)} '
+                f'prev={self.fmt(self.prev_right_ff_range)} count={self.right_toward_wall_count}'
+            )
+
+            if self.right_toward_wall_count >= self.ff_trigger_cycles:
+                self.right_toward_wall_count = 0
+                self.start_ff_pulse(TurnDir.LEFT, 'pushing_toward_right_wall')
+                return self.ff_turn_mag
+
+            return 0.0
+
+        # both walls or no walls -> reset monitor
+        self.reset_ff_trackers()
+        return 0.0
 
     # ============================================================
     # Wall steering
@@ -806,6 +941,7 @@ class Task1MazeNode(Node):
         twist = Twist()
 
         wall_term = self.compute_wall_term()
+        ff_term = self.compute_feedforward_term()
         self.maybe_update_target_heading(self.mode)
         heading_term = self.compute_heading_term(self.mode)
 
@@ -815,7 +951,12 @@ class Task1MazeNode(Node):
             if self.front_valid and self.front_range is not None and self.front_range < self.near_front_fusion_distance:
                 wall_weight = self.wall_weight_near_front
 
-        raw_ang = wall_weight * wall_term + heading_term
+        raw_ang = wall_weight * wall_term + heading_term + ff_term
+
+        self.debug_periodic(
+            f'[FOLLOW_CTRL] mode={self.mode} wall={wall_term:.3f} head={heading_term:.3f} ff={ff_term:.3f} raw={raw_ang:.3f}'
+        )
+
         raw_ang = self.clamp(raw_ang, -self.max_angular, self.max_angular)
         raw_ang = self.apply_deadband(raw_ang, self.angular_deadband)
 
@@ -879,9 +1020,9 @@ class Task1MazeNode(Node):
 
         self.debug_periodic(
             f'[FOLLOW] front_raw={self.fmt(self.last_front_raw)} front={self.fmt(self.front_range)} '
-            f'left_raw={self.fmt(self.last_left_raw)} left={self.fmt(self.left_range)} lockL={self.left_edge_locked} '
-            f'right_raw={self.fmt(self.last_right_raw)} right={self.fmt(self.right_range)} lockR={self.right_edge_locked} '
-            f'mode={self.mode}'
+            f'left_raw={self.fmt(self.last_left_raw)} left={self.fmt(self.left_range)} lockL={self.left_edge_locked} wallL={self.left_wall_present} '
+            f'right_raw={self.fmt(self.last_right_raw)} right={self.fmt(self.right_range)} lockR={self.right_edge_locked} wallR={self.right_wall_present} '
+            f'mode={self.mode} ffHold={self.ff_hold_counter} ffCooldown={self.ff_cooldown_counter}'
         )
 
         stopped = self.follow_motion()
