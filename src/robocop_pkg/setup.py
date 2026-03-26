@@ -55,7 +55,7 @@ setup(
             'task3 = robocop_pkg.task3:main',
             'task_manager = robocop_pkg.task_manager:main',
             'servo_node = robocop_pkg.servo_node:main',
-
+            'virtual_arena_navigator = robocop_pkg.virtual_arena_navigator:main',
         ],
     },
 )
