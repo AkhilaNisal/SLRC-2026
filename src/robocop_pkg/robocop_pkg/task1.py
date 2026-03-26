@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import math
-from dataclasses import dataclass, field
 from enum import Enum
 
 import rclpy
@@ -15,95 +14,71 @@ from std_msgs.msg import Float32
 
 class NavState(Enum):
     FOLLOW = 0
-    STOP_AND_DECIDE = 1
-    TURNING = 2
-    FINISHED = 3
+    REFRESH_FOR_DECISION = 1
+    STOP_AND_DECIDE = 2
+    TURNING = 3
 
 
 class TurnDir(Enum):
     LEFT = 'L'
-    FRONT = 'F'
     RIGHT = 'R'
     BACK = 'B'
     NONE = 'N'
 
 
-@dataclass
-class JunctionFrame:
-    # Directions at this junction that were not taken yet
-    remaining_dirs: list = field(default_factory=list)
-
-
-class Task1MazeDFSNode(Node):
-    """
-    Fixed-arena Task 1 traversal node.
-
-    Strategy:
-    1. Follow corridors using:
-       - double-wall centering when both walls exist
-       - gyro heading hold otherwise
-    2. When a junction/dead-end is detected:
-       - choose unexplored branch in priority LEFT -> FRONT -> RIGHT
-       - save remaining branches in stack
-    3. At dead-end:
-       - turn BACK
-       - return to previous junction
-    4. When all junction branches are explored:
-       - run configurable exit_plan
-    """
-
+class Task1MazeNode(Node):
     def __init__(self):
-        super().__init__('task1_dfs')
+        super().__init__('task1')
 
-        # =========================================================
+        # =========================
         # Topics
-        # =========================================================
+        # =========================
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('left_range_topic', '/robocop/ds_left')
         self.declare_parameter('front_range_topic', '/robocop/ds_front')
         self.declare_parameter('right_range_topic', '/robocop/ds_right')
         self.declare_parameter('gyro_angle_topic', '/gyro_angle')
 
-        # =========================================================
+        # =========================
         # Rates
-        # =========================================================
+        # =========================
         self.declare_parameter('control_rate_hz', 20.0)
 
-        # =========================================================
+        # =========================
         # Speeds
-        # =========================================================
+        # =========================
         self.declare_parameter('max_forward_speed', 0.14)
         self.declare_parameter('transition_forward_speed', 0.08)
         self.declare_parameter('blind_forward_speed', 0.06)
         self.declare_parameter('min_forward_speed', 0.03)
 
-        # =========================================================
+        # =========================
         # Front stop / slowdown
-        # =========================================================
-        self.declare_parameter('front_stop_distance', 0.20)
+        # =========================
+        self.declare_parameter('front_stop_distance', 0.25)
         self.declare_parameter('front_slow_distance', 0.35)
-        self.declare_parameter('front_hard_slow_distance', 0.28)
+        self.declare_parameter('front_hard_slow_distance', 0.30)
         self.declare_parameter('front_stop_hysteresis', 0.01)
 
-        # =========================================================
+        # =========================
         # Wall handling
-        # =========================================================
-        self.declare_parameter('wall_detect_distance', 0.20)
-        self.declare_parameter('wall_clear_distance', 0.30)
+        # =========================
+        self.declare_parameter('wall_detect_distance', 0.30)
+        self.declare_parameter('wall_clear_distance', 0.35)
         self.declare_parameter('turn_open_distance', 0.34)
         self.declare_parameter('min_valid_range', 0.04)
         self.declare_parameter('max_valid_range', 1.50)
         self.declare_parameter('wall_loss_confirm_cycles', 5)
 
-        # =========================================================
+        # =========================
         # Wall control gains
-        # =========================================================
+        # =========================
         self.declare_parameter('center_kp', 2.2)
         self.declare_parameter('center_kd', 1.5)
 
-        # =========================================================
+        # =========================
         # Gyro heading-hold gains
-        # =========================================================
+        # =========================
         self.declare_parameter('heading_kp', 0.030)
         self.declare_parameter('heading_kd', 0.010)
         self.declare_parameter('heading_weight_both', 0.20)
@@ -112,32 +87,44 @@ class Task1MazeDFSNode(Node):
         self.declare_parameter('heading_error_limit_deg', 25.0)
         self.declare_parameter('gyro_valid_timeout_sec', 0.50)
 
-        # =========================================================
+        # =========================
         # Fusion shaping
-        # =========================================================
+        # =========================
         self.declare_parameter('wall_weight_both', 1.00)
         self.declare_parameter('wall_weight_near_front', 0.35)
         self.declare_parameter('near_front_fusion_distance', 0.30)
 
-        # =========================================================
+        # =========================
         # Output shaping
-        # =========================================================
+        # =========================
         self.declare_parameter('max_angular', 0.8)
         self.declare_parameter('angular_deadband', 0.03)
         self.declare_parameter('angular_slew_per_cycle', 0.10)
 
-        # =========================================================
+        # =========================
         # Filtering / edge handling
-        # =========================================================
+        # =========================
         self.declare_parameter('side_filter_alpha', 0.22)
         self.declare_parameter('front_filter_alpha', 0.30)
         self.declare_parameter('max_side_jump', 0.14)
         self.declare_parameter('max_front_jump', 0.22)
         self.declare_parameter('corridor_width_alpha', 0.10)
 
-        # =========================================================
+        # =========================
+        # Decision refresh
+        # =========================
+        self.declare_parameter('decision_required_samples', 5)
+        self.declare_parameter('decision_filter_alpha', 0.35)
+
+        # =========================
+        # Debug
+        # =========================
+        self.declare_parameter('debug_logs', True)
+        self.declare_parameter('debug_every_n_cycles', 5)
+
+        # =========================
         # Turn controller
-        # =========================================================
+        # =========================
         self.declare_parameter('turn_angular_speed', 0.45)
         self.declare_parameter('turn_slow_angular_speed', 0.22)
         self.declare_parameter('turn_slowdown_error_deg', 18.0)
@@ -145,29 +132,11 @@ class Task1MazeDFSNode(Node):
         self.declare_parameter('turn_settle_cycles', 4)
         self.declare_parameter('post_turn_forward_time_sec', 0.35)
         self.declare_parameter('junction_cooldown_sec', 0.80)
-
-        # =========================================================
-        # Junction / exploration behavior
-        # =========================================================
-        self.declare_parameter('decision_hold_time_sec', 0.18)
         self.declare_parameter('prefer_left_first', True)
-        self.declare_parameter('stop_at_end', True)
 
-        # Example exit plan after exploration is complete.
-        # IMPORTANT:
-        # Tune this after one physical run if needed.
-        # Allowed tokens: L, F, R, B
-        #
-        # Example:
-        # - []      -> stop when full exploration finishes
-        # - ['R']   -> at final completion, take a right branch and continue
-        # - ['R','F'] etc.
-        #
-        self.declare_parameter('exit_plan', [])
-
-        # =========================================================
+        # =========================
         # Read params
-        # =========================================================
+        # =========================
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
         self.left_range_topic = self.get_parameter('left_range_topic').value
         self.front_range_topic = self.get_parameter('front_range_topic').value
@@ -218,6 +187,12 @@ class Task1MazeDFSNode(Node):
         self.max_front_jump = float(self.get_parameter('max_front_jump').value)
         self.corridor_width_alpha = float(self.get_parameter('corridor_width_alpha').value)
 
+        self.decision_required_samples = int(self.get_parameter('decision_required_samples').value)
+        self.decision_filter_alpha = float(self.get_parameter('decision_filter_alpha').value)
+
+        self.debug_logs = bool(self.get_parameter('debug_logs').value)
+        self.debug_every_n_cycles = int(self.get_parameter('debug_every_n_cycles').value)
+
         self.turn_angular_speed = float(self.get_parameter('turn_angular_speed').value)
         self.turn_slow_angular_speed = float(self.get_parameter('turn_slow_angular_speed').value)
         self.turn_slowdown_error_deg = float(self.get_parameter('turn_slowdown_error_deg').value)
@@ -225,18 +200,11 @@ class Task1MazeDFSNode(Node):
         self.turn_settle_cycles = int(self.get_parameter('turn_settle_cycles').value)
         self.post_turn_forward_time_sec = float(self.get_parameter('post_turn_forward_time_sec').value)
         self.junction_cooldown_sec = float(self.get_parameter('junction_cooldown_sec').value)
-
-        self.decision_hold_time_sec = float(self.get_parameter('decision_hold_time_sec').value)
         self.prefer_left_first = bool(self.get_parameter('prefer_left_first').value)
-        self.stop_at_end = bool(self.get_parameter('stop_at_end').value)
 
-        raw_exit_plan = list(self.get_parameter('exit_plan').value)
-        self.exit_plan = [self.parse_turn_token(x) for x in raw_exit_plan if self.parse_turn_token(x) is not None]
-        self.exit_plan_index = 0
-
-        # =========================================================
+        # =========================
         # State
-        # =========================================================
+        # =========================
         self.left_range = None
         self.front_range = None
         self.right_range = None
@@ -247,6 +215,7 @@ class Task1MazeDFSNode(Node):
 
         self.left_wall_present = False
         self.right_wall_present = False
+
         self.left_loss_counter = 0
         self.right_loss_counter = 0
 
@@ -259,7 +228,7 @@ class Task1MazeDFSNode(Node):
         self.mode = 'INIT'
         self.stopped = False
 
-        # Gyro / yaw state
+        # Gyro/yaw state
         self.current_yaw_deg = None
         self.last_yaw_deg = None
         self.target_yaw_deg = None
@@ -273,17 +242,23 @@ class Task1MazeDFSNode(Node):
         self.post_turn_forward_cycles = 0
         self.last_junction_time = None
 
-        # DFS / traversal memory
-        self.junction_stack = []
-        self.backtracking = False
-        self.exploration_done = False
-        self.in_exit_mode = False
-        self.at_root_started = False
-        self.decision_wait_until = None
+        # Edge lock state for side sensors
+        self.left_edge_locked = False
+        self.right_edge_locked = False
 
-        # =========================================================
+        # Refresh-for-decision state
+        self.left_decision_range = None
+        self.right_decision_range = None
+        self.left_decision_samples = 0
+        self.right_decision_samples = 0
+
+        # Debug state
+        self.debug_cycle_counter = 0
+        self.last_left_raw = None
+        self.last_right_raw = None
+        self.last_front_raw = None
+
         # ROS interfaces
-        # =========================================================
         self.left_sub = self.create_subscription(
             Range, self.left_range_topic, self.left_cb, qos_profile_sensor_data
         )
@@ -300,15 +275,14 @@ class Task1MazeDFSNode(Node):
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self.control_loop)
 
-        self.get_logger().info('Task1 DFS maze node started')
+        self.get_logger().info('Task1 maze node started')
         self.get_logger().info(
             f'left={self.left_range_topic}, front={self.front_range_topic}, '
             f'right={self.right_range_topic}, gyro={self.gyro_angle_topic}'
         )
-        self.get_logger().info(f'Configured exit_plan: {[x.value for x in self.exit_plan]}')
 
     # ============================================================
-    # Helper utilities
+    # Helpers
     # ============================================================
     @staticmethod
     def clamp(x, lo, hi):
@@ -338,6 +312,11 @@ class Task1MazeDFSNode(Node):
             return new_val
         if abs(new_val - old_val) > max_jump:
             return old_val
+        return alpha * new_val + (1.0 - alpha) * old_val
+
+    def ema_update(self, old_val, new_val, alpha):
+        if old_val is None:
+            return new_val
         return alpha * new_val + (1.0 - alpha) * old_val
 
     def apply_deadband(self, x, db):
@@ -371,30 +350,68 @@ class Task1MazeDFSNode(Node):
             self.front_range <= (self.front_stop_distance + self.front_stop_hysteresis)
         )
 
-    def left_open(self):
-        return self.left_valid and self.left_range is not None and self.left_range > self.turn_open_distance
-
-    def right_open(self):
-        return self.right_valid and self.right_range is not None and self.right_range > self.turn_open_distance
-
     def recent_junction_block(self):
         if self.last_junction_time is None:
             return False
         return (self.now_sec() - self.last_junction_time) < self.junction_cooldown_sec
 
-    def parse_turn_token(self, token):
-        if token is None:
-            return None
-        s = str(token).strip().upper()
-        if s == 'L':
-            return TurnDir.LEFT
-        if s == 'F':
-            return TurnDir.FRONT
-        if s == 'R':
-            return TurnDir.RIGHT
-        if s == 'B':
-            return TurnDir.BACK
-        return None
+    def fmt(self, x):
+        if x is None:
+            return 'None'
+        return f'{x:.3f}'
+
+    def debug_print(self, msg):
+        if self.debug_logs:
+            self.get_logger().info(msg)
+
+    def debug_periodic(self, msg):
+        if not self.debug_logs:
+            return
+        if self.debug_every_n_cycles <= 1:
+            self.get_logger().info(msg)
+            return
+        if (self.debug_cycle_counter % self.debug_every_n_cycles) == 0:
+            self.get_logger().info(msg)
+
+    def begin_refresh_for_decision(self):
+        self.debug_print(
+            f'[BEGIN_REFRESH] front={self.fmt(self.front_range)} '
+            f'oldL={self.fmt(self.left_range)} oldR={self.fmt(self.right_range)} '
+            f'lockL={self.left_edge_locked} lockR={self.right_edge_locked}'
+        )
+
+        # Release both locks
+        self.left_edge_locked = False
+        self.right_edge_locked = False
+
+        # Throw away old side values so decision cannot use stale readings
+        self.left_range = None
+        self.right_range = None
+        self.left_valid = False
+        self.right_valid = False
+
+        # Clear wall state memory for decision phase
+        self.left_wall_present = False
+        self.right_wall_present = False
+        self.left_loss_counter = 0
+        self.right_loss_counter = 0
+
+        # Reset fresh decision accumulators
+        self.left_decision_range = None
+        self.right_decision_range = None
+        self.left_decision_samples = 0
+        self.right_decision_samples = 0
+
+        self.nav_state = NavState.REFRESH_FOR_DECISION
+
+    def left_ready_for_decision(self):
+        return self.left_decision_samples >= self.decision_required_samples
+
+    def right_ready_for_decision(self):
+        return self.right_decision_samples >= self.decision_required_samples
+
+    def both_ready_for_decision(self):
+        return self.left_ready_for_decision() and self.right_ready_for_decision()
 
     # ============================================================
     # Wall presence
@@ -433,27 +450,124 @@ class Task1MazeDFSNode(Node):
     # ============================================================
     def left_cb(self, msg: Range):
         r = float(msg.range)
-        if self.is_valid_measurement(r):
-            self.left_range = self.filtered_update(
-                self.left_range, r, self.side_filter_alpha, self.max_side_jump
+        self.last_left_raw = r
+
+        if not self.is_valid_measurement(r):
+            self.debug_print(f'[LEFT_CB] invalid raw={self.fmt(r)}')
+            return
+
+        if self.nav_state == NavState.REFRESH_FOR_DECISION:
+            old_decision = self.left_decision_range
+            self.left_decision_range = self.ema_update(
+                self.left_decision_range, r, self.decision_filter_alpha
             )
+            self.left_decision_samples += 1
+
+            self.left_range = self.left_decision_range
             self.left_valid = True
+
+            self.debug_print(
+                f'[LEFT_REFRESH] raw={self.fmt(r)} old_dec={self.fmt(old_decision)} '
+                f'new_dec={self.fmt(self.left_decision_range)} samples={self.left_decision_samples}'
+            )
+            return
+
+        if self.left_range is None:
+            self.left_range = r
+            self.debug_print(f'[LEFT_INIT] raw={self.fmt(r)} set={self.fmt(self.left_range)}')
+        else:
+            if self.left_edge_locked:
+                self.debug_print(
+                    f'[LEFT_LOCKED] raw={self.fmt(r)} hold={self.fmt(self.left_range)}'
+                )
+            else:
+                diff = abs(r - self.left_range)
+                if diff > self.max_side_jump:
+                    self.left_edge_locked = True
+                    self.debug_print(
+                        f'[LEFT_EDGE_LOCK] raw={self.fmt(r)} cur={self.fmt(self.left_range)} '
+                        f'diff={diff:.3f} max_jump={self.max_side_jump:.3f}'
+                    )
+                else:
+                    old_val = self.left_range
+                    self.left_range = self.ema_update(
+                        self.left_range, r, self.side_filter_alpha
+                    )
+                    self.debug_print(
+                        f'[LEFT_UPDATE] raw={self.fmt(r)} old={self.fmt(old_val)} '
+                        f'new={self.fmt(self.left_range)} diff={diff:.3f}'
+                    )
+
+        self.left_valid = True
 
     def front_cb(self, msg: Range):
         r = float(msg.range)
+        self.last_front_raw = r
+
         if self.is_valid_measurement(r):
+            old_val = self.front_range
             self.front_range = self.filtered_update(
                 self.front_range, r, self.front_filter_alpha, self.max_front_jump
             )
             self.front_valid = True
 
+            self.debug_print(
+                f'[FRONT_CB] raw={self.fmt(r)} old={self.fmt(old_val)} new={self.fmt(self.front_range)}'
+            )
+        else:
+            self.debug_print(f'[FRONT_CB] invalid raw={self.fmt(r)}')
+
     def right_cb(self, msg: Range):
         r = float(msg.range)
-        if self.is_valid_measurement(r):
-            self.right_range = self.filtered_update(
-                self.right_range, r, self.side_filter_alpha, self.max_side_jump
+        self.last_right_raw = r
+
+        if not self.is_valid_measurement(r):
+            self.debug_print(f'[RIGHT_CB] invalid raw={self.fmt(r)}')
+            return
+
+        if self.nav_state == NavState.REFRESH_FOR_DECISION:
+            old_decision = self.right_decision_range
+            self.right_decision_range = self.ema_update(
+                self.right_decision_range, r, self.decision_filter_alpha
             )
+            self.right_decision_samples += 1
+
+            self.right_range = self.right_decision_range
             self.right_valid = True
+
+            self.debug_print(
+                f'[RIGHT_REFRESH] raw={self.fmt(r)} old_dec={self.fmt(old_decision)} '
+                f'new_dec={self.fmt(self.right_decision_range)} samples={self.right_decision_samples}'
+            )
+            return
+
+        if self.right_range is None:
+            self.right_range = r
+            self.debug_print(f'[RIGHT_INIT] raw={self.fmt(r)} set={self.fmt(self.right_range)}')
+        else:
+            if self.right_edge_locked:
+                self.debug_print(
+                    f'[RIGHT_LOCKED] raw={self.fmt(r)} hold={self.fmt(self.right_range)}'
+                )
+            else:
+                diff = abs(r - self.right_range)
+                if diff > self.max_side_jump:
+                    self.right_edge_locked = True
+                    self.debug_print(
+                        f'[RIGHT_EDGE_LOCK] raw={self.fmt(r)} cur={self.fmt(self.right_range)} '
+                        f'diff={diff:.3f} max_jump={self.max_side_jump:.3f}'
+                    )
+                else:
+                    old_val = self.right_range
+                    self.right_range = self.ema_update(
+                        self.right_range, r, self.side_filter_alpha
+                    )
+                    self.debug_print(
+                        f'[RIGHT_UPDATE] raw={self.fmt(r)} old={self.fmt(old_val)} '
+                        f'new={self.fmt(self.right_range)} diff={diff:.3f}'
+                    )
+
+        self.right_valid = True
 
     def gyro_cb(self, msg: Float32):
         yaw_deg = float(msg.data)
@@ -546,8 +660,8 @@ class Task1MazeDFSNode(Node):
     # Wall steering
     # ============================================================
     def compute_wall_term(self):
-        left = self.left_wall_present
-        right = self.right_wall_present
+        left = self.left_wall_present and (not self.left_edge_locked)
+        right = self.right_wall_present and (not self.right_edge_locked)
 
         if left and right and self.left_range is not None and self.right_range is not None:
             measured_width = self.left_range + self.right_range
@@ -576,20 +690,6 @@ class Task1MazeDFSNode(Node):
     # Turning
     # ============================================================
     def begin_turn(self, turn_dir: TurnDir):
-        if turn_dir == TurnDir.FRONT:
-            # No actual rotation; just continue in current heading
-            self.nav_state = NavState.FOLLOW
-            self.turn_direction = TurnDir.NONE
-            self.turn_target_yaw_deg = None
-            self.turn_settle_counter = 0
-            self.prev_heading_error = 0.0
-            self.prev_angular_cmd = 0.0
-            self.last_junction_time = self.now_sec()
-            self.post_turn_forward_cycles = max(
-                1, int(self.post_turn_forward_time_sec * self.control_rate_hz)
-            )
-            return True
-
         if not self.gyro_is_fresh() or self.current_yaw_deg is None:
             self.get_logger().warn('Cannot begin turn: gyro not fresh')
             return False
@@ -654,145 +754,50 @@ class Task1MazeDFSNode(Node):
         self.cmd_pub.publish(twist)
 
     # ============================================================
-    # Junction logic
+    # Decision logic
     # ============================================================
-    def available_forward_dirs(self):
-        dirs = []
-        if self.left_open():
-            dirs.append(TurnDir.LEFT)
-        if not self.front_blocked():
-            dirs.append(TurnDir.FRONT)
-        if self.right_open():
-            dirs.append(TurnDir.RIGHT)
-        return dirs
+    def choose_turn_when_front_blocked(self):
+        left_open = self.left_valid and self.left_range is not None and self.left_range > self.turn_open_distance
+        right_open = self.right_valid and self.right_range is not None and self.right_range > self.turn_open_distance
 
-    def sort_dirs(self, dirs):
-        if self.prefer_left_first:
-            order = [TurnDir.LEFT, TurnDir.FRONT, TurnDir.RIGHT]
-        else:
-            order = [TurnDir.RIGHT, TurnDir.FRONT, TurnDir.LEFT]
-        return [d for d in order if d in dirs]
+        self.debug_print(
+            f'[DECIDE] front={self.fmt(self.front_range)} '
+            f'left_raw={self.fmt(self.last_left_raw)} left={self.fmt(self.left_range)} left_valid={self.left_valid} left_samples={self.left_decision_samples} left_open={left_open} '
+            f'right_raw={self.fmt(self.last_right_raw)} right={self.fmt(self.right_range)} right_valid={self.right_valid} right_samples={self.right_decision_samples} right_open={right_open}'
+        )
 
-    def is_decision_point(self):
-        """
-        Decision point when:
-        - front blocked (dead-end / T / corner)
-        - left side open
-        - right side open
+        if left_open and not right_open:
+            self.get_logger().info(f'Front blocked, left open ({self.left_range:.3f}) -> LEFT')
+            return TurnDir.LEFT
 
-        This lets the robot branch at side openings instead of only waiting
-        until a front wall appears.
-        """
-        if self.front_blocked():
-            return True
-        if self.left_open():
-            return True
-        if self.right_open():
-            return True
-        return False
+        if right_open and not left_open:
+            self.get_logger().info(f'Front blocked, right open ({self.right_range:.3f}) -> RIGHT')
+            return TurnDir.RIGHT
 
-    def choose_next_turn(self):
-        """
-        DFS with stack, assuming a tree-like maze (no loops).
-
-        backtracking = False:
-            choose first unexplored direction
-            save remaining sibling branches in stack
-
-        backtracking = True:
-            we just came back from a child branch
-            at next junction:
-              - if parent has remaining branch -> take it
-              - else keep BACKtracking
-        """
-        forward_dirs = self.sort_dirs(self.available_forward_dirs())
-
-        # Root first entry
-        if not self.at_root_started:
-            self.at_root_started = True
-            if len(forward_dirs) > 1:
-                chosen = forward_dirs[0]
-                remaining = forward_dirs[1:]
-                self.junction_stack.append(JunctionFrame(remaining_dirs=remaining))
-            elif len(forward_dirs) == 1:
-                chosen = forward_dirs[0]
-            else:
-                chosen = TurnDir.BACK
-
+        if left_open and right_open:
+            choice = TurnDir.LEFT if self.prefer_left_first else TurnDir.RIGHT
             self.get_logger().info(
-                f'ROOT choose={chosen.value} stack={[f.remaining_dirs for f in self.junction_stack]}'
+                f'Front blocked, both open | L={self.left_range:.3f}, R={self.right_range:.3f} -> {choice.value}'
             )
-            return chosen
+            return choice
 
-        # Exit mode after full exploration
-        if self.in_exit_mode:
-            if self.exit_plan_index < len(self.exit_plan):
-                chosen = self.exit_plan[self.exit_plan_index]
-                self.exit_plan_index += 1
-                self.get_logger().info(f'EXIT plan choose={chosen.value}')
-                return chosen
+        left_txt = f'{self.left_range:.3f}' if self.left_range is not None else 'None'
+        right_txt = f'{self.right_range:.3f}' if self.right_range is not None else 'None'
+        self.get_logger().info(f'Front blocked, no side open | L={left_txt}, R={right_txt} -> BACK')
+        return TurnDir.BACK
 
-            self.exploration_done = True
-            return TurnDir.NONE
+    def refresh_for_decision_step(self):
+        self.stop_cmd()
 
-        # Backtracking mode: the next junction reached is parent
-        if self.backtracking:
-            if self.junction_stack:
-                top = self.junction_stack[-1]
-                if top.remaining_dirs:
-                    chosen = top.remaining_dirs.pop(0)
-                    self.backtracking = False
-                    self.get_logger().info(
-                        f'RETURN parent -> choose sibling {chosen.value}, remaining={top.remaining_dirs}'
-                    )
-                    return chosen
-                else:
-                    self.junction_stack.pop()
-                    if self.junction_stack:
-                        self.backtracking = True
-                        self.get_logger().info('RETURN parent exhausted -> BACK again')
-                        return TurnDir.BACK
-                    else:
-                        # We are back at root and exploration is complete
-                        self.get_logger().info('Exploration complete at root')
-                        self.in_exit_mode = True
-                        if self.exit_plan_index < len(self.exit_plan):
-                            chosen = self.exit_plan[self.exit_plan_index]
-                            self.exit_plan_index += 1
-                            self.backtracking = False
-                            self.get_logger().info(f'EXIT after full exploration -> {chosen.value}')
-                            return chosen
+        self.debug_print(
+            f'[REFRESH_STEP] front={self.fmt(self.front_range)} '
+            f'Lraw={self.fmt(self.last_left_raw)} Ldec={self.fmt(self.left_decision_range)} Lsamples={self.left_decision_samples} Lready={self.left_ready_for_decision()} '
+            f'Rraw={self.fmt(self.last_right_raw)} Rdec={self.fmt(self.right_decision_range)} Rsamples={self.right_decision_samples} Rready={self.right_ready_for_decision()}'
+        )
 
-                        return TurnDir.NONE
-            else:
-                # No stack means already at root
-                self.get_logger().info('Backtracking finished with empty stack')
-                self.in_exit_mode = True
-                if self.exit_plan_index < len(self.exit_plan):
-                    chosen = self.exit_plan[self.exit_plan_index]
-                    self.exit_plan_index += 1
-                    self.backtracking = False
-                    return chosen
-                return TurnDir.NONE
-
-        # Normal exploring mode
-        if len(forward_dirs) == 0:
-            self.backtracking = True
-            self.get_logger().info('Dead-end -> BACK')
-            return TurnDir.BACK
-
-        chosen = forward_dirs[0]
-        remaining = forward_dirs[1:]
-
-        if remaining:
-            self.junction_stack.append(JunctionFrame(remaining_dirs=remaining))
-            self.get_logger().info(
-                f'New junction choose={chosen.value}, save remaining={remaining}, stack_depth={len(self.junction_stack)}'
-            )
-        else:
-            self.get_logger().info(f'Corridor / single-choice choose={chosen.value}')
-
-        return chosen
+        if self.both_ready_for_decision():
+            self.debug_print('[REFRESH_STEP] both sides ready -> STOP_AND_DECIDE')
+            self.nav_state = NavState.STOP_AND_DECIDE
 
     # ============================================================
     # Follow controller
@@ -807,11 +812,7 @@ class Task1MazeDFSNode(Node):
         wall_weight = 0.0
         if self.mode == 'BOTH_WALLS':
             wall_weight = self.wall_weight_both
-            if (
-                self.front_valid and
-                self.front_range is not None and
-                self.front_range < self.near_front_fusion_distance
-            ):
+            if self.front_valid and self.front_range is not None and self.front_range < self.near_front_fusion_distance:
                 wall_weight = self.wall_weight_near_front
 
         raw_ang = wall_weight * wall_term + heading_term
@@ -850,16 +851,12 @@ class Task1MazeDFSNode(Node):
         return False
 
     # ============================================================
-    # High-level control loop
+    # Control loop
     # ============================================================
     def control_loop(self):
-        self.update_wall_presence()
+        self.debug_cycle_counter += 1
 
         if not (self.left_valid or self.front_valid or self.right_valid or self.gyro_is_fresh()):
-            self.stop_cmd()
-            return
-
-        if self.nav_state == NavState.FINISHED:
             self.stop_cmd()
             return
 
@@ -867,37 +864,31 @@ class Task1MazeDFSNode(Node):
             self.execute_turn()
             return
 
+        if self.nav_state == NavState.REFRESH_FOR_DECISION:
+            self.refresh_for_decision_step()
+            return
+
         if self.nav_state == NavState.STOP_AND_DECIDE:
             self.stop_cmd()
-
-            if self.decision_wait_until is None:
-                self.decision_wait_until = self.now_sec() + self.decision_hold_time_sec
-                return
-
-            if self.now_sec() < self.decision_wait_until:
-                return
-
-            self.decision_wait_until = None
-            decision = self.choose_next_turn()
-
-            if decision == TurnDir.NONE:
-                self.get_logger().info('Traversal finished')
-                if self.stop_at_end:
-                    self.nav_state = NavState.FINISHED
-                    self.stop_cmd()
-                else:
-                    self.nav_state = NavState.FOLLOW
-                return
-
+            decision = self.choose_turn_when_front_blocked()
             self.begin_turn(decision)
             return
 
-        # Normal following
-        _ = self.follow_motion()
+        # FOLLOW
+        self.update_wall_presence()
 
-        # Junction detection by side opening or front block
-        if not self.recent_junction_block() and self.is_decision_point():
-            self.nav_state = NavState.STOP_AND_DECIDE
+        self.debug_periodic(
+            f'[FOLLOW] front_raw={self.fmt(self.last_front_raw)} front={self.fmt(self.front_range)} '
+            f'left_raw={self.fmt(self.last_left_raw)} left={self.fmt(self.left_range)} lockL={self.left_edge_locked} '
+            f'right_raw={self.fmt(self.last_right_raw)} right={self.fmt(self.right_range)} lockR={self.right_edge_locked} '
+            f'mode={self.mode}'
+        )
+
+        stopped = self.follow_motion()
+
+        if stopped and not self.recent_junction_block():
+            self.debug_print('[CONTROL] front stop detected -> begin refresh for decision')
+            self.begin_refresh_for_decision()
             return
 
     def stop_robot(self):
@@ -906,7 +897,7 @@ class Task1MazeDFSNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Task1MazeDFSNode()
+    node = Task1MazeNode()
 
     try:
         rclpy.spin(node)
