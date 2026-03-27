@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'tof_node = tof_sensors.tof_node:main',
+            'box_detector_test = tof_sensors.box_detector_test:main',   
         ],
     },
 )

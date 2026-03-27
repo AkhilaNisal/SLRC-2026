@@ -10,10 +10,14 @@ NUM_JOINTS = 5
 SERVO_CHANNELS = [0, 1, 2, 3, 4]
 
 # ---------------- Joint limits in RAD ----------------
-# First 4 are your arm joints.
-# 5th is the gripper joint. Change these if needed.
-
-joint_lower_rad = [-1.57, -1.57, -2.35, -1.57, -0.60]
+# First 4 are arm joints.
+# 5th is gripper joint.
+# 
+# IMPORTANT:
+# Make these match the values used by MoveIt/action server.
+# Since your action server is using gripper values around 0.0 and -1.2144,
+# the gripper range here must include that.
+joint_lower_rad = [-1.57, -1.57, -2.35, -1.57, -1.30]
 joint_upper_rad = [ 1.57,  1.57,  0.78,  1.57,  0.60]
 
 # If reversed, min/max are swapped
@@ -22,6 +26,21 @@ servo_max_deg = [180, 0, 180, 0, 180]
 
 # Zero trim in servo degrees
 zero_offset_deg = [0, 1, -10, 0, 0]
+
+# ---------------- Home pose in RAD ----------------
+# Use your actual home pose from the action server.
+# First 4 joints = arm home pose
+# 5th joint = gripper startup pose
+#
+# If gripper open on your real hardware is 0.0, keep 0.0 here.
+# If you test and find open is another value, change only the 5th entry.
+HOME_JOINTS_RAD = [
+    0.3491,   # base_rotating_waste_joint
+    0.6458,   # rotating_waste_arm1_joint
+    -1.2566,  # arm1_arm2_joint
+    0.9250,   # arm2_gripper_base_joint
+    -0.1   # gripper_base_left_joint (startup open)
+]
 
 # Smoothing and update timing
 SERVO_PERIOD_SEC = 0.02   # 50 Hz
@@ -79,10 +98,7 @@ def map_servo_to_joint(joint_index, servo_deg):
     smin = min(servo_min_deg[joint_index], servo_max_deg[joint_index])
     smax = max(servo_min_deg[joint_index], servo_max_deg[joint_index])
 
-    if sd < smin:
-        sd = smin
-    if sd > smax:
-        sd = smax
+    sd = clampf(sd, smin, smax)
 
     jr = mapf(
         float(sd),
@@ -95,15 +111,23 @@ def map_servo_to_joint(joint_index, servo_deg):
 
 
 def init_home():
+    print("Initializing servos to HOME_JOINTS_RAD ...")
+
     for i in range(NUM_JOINTS):
-        home = map_joint_to_servo(i, 0.0)
-        current_pos[i] = home
-        target_pos[i] = home
-        filtered_pos[i] = float(home)
+        home_servo_deg = map_joint_to_servo(i, HOME_JOINTS_RAD[i])
+
+        current_pos[i] = home_servo_deg
+        target_pos[i] = home_servo_deg
+        filtered_pos[i] = float(home_servo_deg)
 
         ch = SERVO_CHANNELS[i]
         kit.servo[ch].set_pulse_width_range(500, 2500)
         kit.servo[ch].angle = current_pos[i]
+
+        print(
+            f"Joint {i}: home_rad={HOME_JOINTS_RAD[i]:.4f} -> "
+            f"servo_deg={home_servo_deg}"
+        )
 
 
 def parse_positions(line):
@@ -116,7 +140,8 @@ def parse_positions(line):
     for i in range(min(NUM_JOINTS, len(parts))):
         try:
             cmd_rad = float(parts[i])
-            target_pos[i] = map_joint_to_servo(i, cmd_rad)
+            mapped = map_joint_to_servo(i, cmd_rad)
+            target_pos[i] = mapped
         except ValueError:
             pass
 

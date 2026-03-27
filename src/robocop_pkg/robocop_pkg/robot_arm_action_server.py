@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import math
 import time
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.node import Node
 
+from std_msgs.msg import Float32MultiArray
 from moveit.core.robot_state import RobotState
 from moveit.planning import MoveItPy, PlanningComponent
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -35,10 +37,10 @@ ROBOT_CONFIG = {
         "pipeline_names": ["ompl"]
     },
     "plan_request_params": {
-        "planning_attempts": 1,
+        "planning_attempts": 5,
         "planning_pipeline": "ompl",
-        "max_velocity_scaling_factor": 1.0,
-        "max_acceleration_scaling_factor": 1.0
+        "max_velocity_scaling_factor": 0.8,
+        "max_acceleration_scaling_factor": 0.5
     },
     "ompl": {
         "planning_plugins": ["ompl_interface/OMPLPlanner"],
@@ -65,22 +67,51 @@ class RobotArmActionServer(Node):
         self.declare_parameter("action_name", "/pick_box")
         self.declare_parameter("startup_delay_sec", 1.0)
         self.declare_parameter("step_pause_sec", 0.5)
+        self.declare_parameter("plan_settle_sec", 0.2)
+        self.declare_parameter("retry_count", 3)
+        self.declare_parameter("retry_pause_sec", 0.3)
         self.declare_parameter("max_box_count", 6)
 
         self.declare_parameter("arm_group", "robot_arm")
         self.declare_parameter("gripper_group", "gripper")
 
+        # Distance move topic/settings (must match cmd_vel_stepper_node reasonably)
+        self.declare_parameter("cmd_distance_topic", "/cmd_distance")
+        self.declare_parameter("backward_distance_m", 0.05)           # 5 cm
+        self.declare_parameter("distance_motion_extra_wait_sec", 0.3)
+
+        # These are used only to estimate how long the /cmd_distance move will take
+        self.declare_parameter("wheel_radius", 0.0325)
+        self.declare_parameter("steps_per_rev", 200)
+        self.declare_parameter("microsteps", 16)
+        self.declare_parameter("distance_mode_sps", 800.0)
+
         self.action_name = str(self.get_parameter("action_name").value)
         self.startup_delay_sec = float(self.get_parameter("startup_delay_sec").value)
         self.step_pause_sec = float(self.get_parameter("step_pause_sec").value)
+        self.plan_settle_sec = float(self.get_parameter("plan_settle_sec").value)
+        self.retry_count = int(self.get_parameter("retry_count").value)
+        self.retry_pause_sec = float(self.get_parameter("retry_pause_sec").value)
         self.max_box_count = int(self.get_parameter("max_box_count").value)
 
         self.arm_group = str(self.get_parameter("arm_group").value)
         self.gripper_group = str(self.get_parameter("gripper_group").value)
 
-        # -------------------------------------------------
-        # Robot arm joint names only
-        # -------------------------------------------------
+        self.cmd_distance_topic = str(self.get_parameter("cmd_distance_topic").value)
+        self.backward_distance_m = float(self.get_parameter("backward_distance_m").value)
+        self.distance_motion_extra_wait_sec = float(
+            self.get_parameter("distance_motion_extra_wait_sec").value
+        )
+
+        self.wheel_radius = float(self.get_parameter("wheel_radius").value)
+        self.steps_per_rev = int(self.get_parameter("steps_per_rev").value)
+        self.microsteps = int(self.get_parameter("microsteps").value)
+        self.distance_mode_sps = float(self.get_parameter("distance_mode_sps").value)
+
+        self.steps_per_mech_rev = self.steps_per_rev * self.microsteps
+        self.wheel_circumference = 2.0 * math.pi * self.wheel_radius
+        self.meters_per_step = self.wheel_circumference / float(self.steps_per_mech_rev)
+
         self.arm_joint_names = [
             "base_rotating_waste_joint",
             "rotating_waste_arm1_joint",
@@ -88,9 +119,9 @@ class RobotArmActionServer(Node):
             "arm2_gripper_base_joint",
         ]
 
-        # -------------------------------------------------
-        # Custom robot-arm poses using joint angles (radians)
-        # -------------------------------------------------
+        self.gripper_joint_names = [
+            "gripper_base_left_joint",
+        ]
 
         # home = [20, 37, -72, 53]
         self.declare_parameter("home.base_rotating_waste_joint", 0.3491)
@@ -98,19 +129,25 @@ class RobotArmActionServer(Node):
         self.declare_parameter("home.arm1_arm2_joint", -1.2566)
         self.declare_parameter("home.arm2_gripper_base_joint", 0.9250)
 
-        # grab = [-7, 12, -100, 67]
-        self.declare_parameter("grab.base_rotating_waste_joint", -0.1222)
-        self.declare_parameter("grab.rotating_waste_arm1_joint", 0.2094)
-        self.declare_parameter("grab.arm1_arm2_joint", -1.7453)
-        self.declare_parameter("grab.arm2_gripper_base_joint", 1.1694)
+        # grab = [5, 56, 40, -79]      5,71,40, -62
+        self.declare_parameter("grab.base_rotating_waste_joint", 0.0873)
+        self.declare_parameter("grab.rotating_waste_arm1_joint", 0.9774)
+        self.declare_parameter("grab.arm1_arm2_joint", 0.6981)
+        self.declare_parameter("grab.arm2_gripper_base_joint", -1.3788)
 
-        # place1 = [-16, 12, -100, 67]
+        # lift = [5, 45, 40, -81]     5,61,40,-68
+        self.declare_parameter("lift.base_rotating_waste_joint", 0.0873)
+        self.declare_parameter("lift.rotating_waste_arm1_joint", 0.7854)
+        self.declare_parameter("lift.arm1_arm2_joint", 0.6981)
+        self.declare_parameter("lift.arm2_gripper_base_joint", -1.4137)
+
+        # place1 = [-16, 12, -100, 67]    -16,-7,-110,50
         self.declare_parameter("place1.base_rotating_waste_joint", -0.2793)
         self.declare_parameter("place1.rotating_waste_arm1_joint", 0.2094)
         self.declare_parameter("place1.arm1_arm2_joint", -1.7453)
         self.declare_parameter("place1.arm2_gripper_base_joint", 1.1694)
 
-        # place2 = [23, -4, -92, 75]
+        # place2 = [23, -4, -92, 75]    37, -4,-114,46
         self.declare_parameter("place2.base_rotating_waste_joint", 0.4014)
         self.declare_parameter("place2.rotating_waste_arm1_joint", -0.0698)
         self.declare_parameter("place2.arm1_arm2_joint", -1.6057)
@@ -145,11 +182,21 @@ class RobotArmActionServer(Node):
         self.declare_parameter("restore.rotating_waste_arm1_joint", 1.3265)
         self.declare_parameter("restore.arm1_arm2_joint", 0.7854)
         self.declare_parameter("restore.arm2_gripper_base_joint", 0.6109)
+ 
+        # gripper
+        self.declare_parameter("gripper_open.gripper_base_left_joint", -0.9)
+        self.declare_parameter("gripper_close.gripper_base_left_joint", 0.5)
 
         self.declare_parameter("restore_box_count", 3)
 
         self.restore_box_count = int(self.get_parameter("restore_box_count").value)
         self.placed_box_count = 0
+
+        self.cmd_distance_pub = self.create_publisher(
+            Float32MultiArray,
+            self.cmd_distance_topic,
+            10
+        )
 
         self.get_logger().info("Initializing MoveItPy...")
         self.robot = MoveItPy(node_name="moveit_py", config_dict=ROBOT_CONFIG)
@@ -167,6 +214,13 @@ class RobotArmActionServer(Node):
         )
 
         self.get_logger().info(f"Robot arm action server started on {self.action_name}")
+        self.get_logger().info(f"Arm joints: {self.arm_joint_names}")
+        self.get_logger().info(f"Gripper joints: {self.gripper_joint_names}")
+        self.get_logger().info(f"cmd_distance_topic: {self.cmd_distance_topic}")
+        self.get_logger().info(
+            f"distance estimate: meters_per_step={self.meters_per_step:.8f}, "
+            f"distance_mode_sps={self.distance_mode_sps:.1f}"
+        )
 
         self._startup_done = False
         self._startup_timer = self.create_timer(
@@ -194,8 +248,54 @@ class RobotArmActionServer(Node):
             values[joint_name] = float(self.get_parameter(f"{prefix}.{joint_name}").value)
         return values
 
+    def get_gripper_joint_dict(self, prefix: str) -> dict:
+        values = {}
+        for joint_name in self.gripper_joint_names:
+            values[joint_name] = float(self.get_parameter(f"{prefix}.{joint_name}").value)
+        return values
+
+    def _sleep_with_cancel_check(self, goal_handle, duration_sec: float) -> bool:
+        start = time.monotonic()
+        while time.monotonic() - start < duration_sec:
+            if goal_handle is not None and goal_handle.is_cancel_requested:
+                return False
+            time.sleep(0.02)
+        return True
+
+    def estimate_distance_move_time(self, distance_m: float) -> float:
+        step_count = abs(distance_m / self.meters_per_step)
+        if self.distance_mode_sps <= 0.0:
+            return 0.0
+        return step_count / self.distance_mode_sps
+
+    def move_base_by_distance(self, goal_handle, left_distance_m: float, right_distance_m: float) -> bool:
+        msg = Float32MultiArray()
+        msg.data = [float(left_distance_m), float(right_distance_m)]
+
+        est_left = self.estimate_distance_move_time(left_distance_m)
+        est_right = self.estimate_distance_move_time(right_distance_m)
+        wait_time = max(est_left, est_right) + self.distance_motion_extra_wait_sec
+
+        self.get_logger().info(
+            f"Publishing cmd_distance: left={left_distance_m:.4f} m, "
+            f"right={right_distance_m:.4f} m, estimated_wait={wait_time:.3f} s"
+        )
+
+        self.cmd_distance_pub.publish(msg)
+
+        if not self._sleep_with_cancel_check(goal_handle, wait_time):
+            return False
+
+        return True
+
+    def move_base_backward(self, goal_handle) -> bool:
+        d = abs(self.backward_distance_m)
+        return self.move_base_by_distance(goal_handle, -d, -d)
+
     def move_arm_joint_values(self, joint_values: dict, label: str) -> bool:
         try:
+            time.sleep(self.plan_settle_sec)
+
             robot_state = RobotState(self.robot.get_robot_model())
             robot_state.joint_positions = joint_values
 
@@ -207,7 +307,7 @@ class RobotArmActionServer(Node):
                 self.get_logger().error(f"Planning failed for arm joint target '{label}'")
                 return False
 
-            self.robot.execute(plan_result.trajectory, controllers=[])
+            self.robot.execute(plan_result.trajectory, controllers=["robot_arm_controller"])
             time.sleep(self.step_pause_sec)
 
             joint_str = ", ".join([f"{k}={v:.4f}" for k, v in joint_values.items()])
@@ -218,45 +318,100 @@ class RobotArmActionServer(Node):
             self.get_logger().error(f"Exception in move_arm_joint_values('{label}'): {exc}")
             return False
 
-    def move_gripper_named(self, name: str) -> bool:
+    def move_gripper_joint_values(self, joint_values: dict, label: str) -> bool:
         try:
+            time.sleep(self.plan_settle_sec)
+
+            robot_state = RobotState(self.robot.get_robot_model())
+            robot_state.joint_positions = joint_values
+
             self.gripper.set_start_state_to_current_state()
-            self.gripper.set_goal_state(configuration_name=name)
+            self.gripper.set_goal_state(robot_state=robot_state)
 
             plan_result = self.gripper.plan()
             if not plan_result:
-                self.get_logger().error(f"Planning failed for gripper named target '{name}'")
+                self.get_logger().error(f"Planning failed for gripper joint target '{label}'")
                 return False
 
-            self.robot.execute(plan_result.trajectory, controllers=[])
+            self.robot.execute(plan_result.trajectory, controllers=["gripper_controller"])
             time.sleep(self.step_pause_sec)
-            self.get_logger().info(f"Executed gripper named target '{name}'")
+
+            joint_str = ", ".join([f"{k}={v:.4f}" for k, v in joint_values.items()])
+            self.get_logger().info(f"Executed gripper target '{label}': {joint_str}")
             return True
 
         except Exception as exc:
-            self.get_logger().error(f"Exception in move_gripper_named('{name}'): {exc}")
+            self.get_logger().error(f"Exception in move_gripper_joint_values('{label}'): {exc}")
             return False
+
+    def move_arm_joint_values_with_retry(self, joint_values: dict, label: str, retries: int = None) -> bool:
+        if retries is None:
+            retries = self.retry_count
+
+        for attempt in range(1, retries + 1):
+            self.get_logger().info(f"Arm target '{label}' attempt {attempt}/{retries}")
+            if self.move_arm_joint_values(joint_values, label):
+                return True
+
+            if attempt < retries:
+                self.get_logger().warn(
+                    f"Retrying arm target '{label}' after failed attempt {attempt}/{retries}"
+                )
+                time.sleep(self.retry_pause_sec)
+
+        self.get_logger().error(f"All retries failed for arm target '{label}'")
+        return False
+
+    def move_gripper_joint_values_with_retry(self, joint_values: dict, label: str, retries: int = None) -> bool:
+        if retries is None:
+            retries = self.retry_count
+
+        for attempt in range(1, retries + 1):
+            self.get_logger().info(f"Gripper target '{label}' attempt {attempt}/{retries}")
+            if self.move_gripper_joint_values(joint_values, label):
+                return True
+
+            if attempt < retries:
+                self.get_logger().warn(
+                    f"Retrying gripper target '{label}' after failed attempt {attempt}/{retries}"
+                )
+                time.sleep(self.retry_pause_sec)
+
+        self.get_logger().error(f"All retries failed for gripper target '{label}'")
+        return False
+
+    def open_gripper(self) -> bool:
+        return self.move_gripper_joint_values_with_retry(
+            self.get_gripper_joint_dict("gripper_open"),
+            "gripper_open"
+        )
+
+    def close_gripper(self) -> bool:
+        return self.move_gripper_joint_values_with_retry(
+            self.get_gripper_joint_dict("gripper_close"),
+            "gripper_close"
+        )
 
     def fail_result(self, goal_handle, message: str):
         self.get_logger().error(message)
-        goal_handle.abort()
         result = PickBox.Result()
+        goal_handle.abort()
         result.success = False
         result.message = message
         return result
 
     def success_result(self, goal_handle, message: str):
         self.get_logger().info(message)
-        goal_handle.succeed()
         result = PickBox.Result()
+        goal_handle.succeed()
         result.success = True
         result.message = message
         return result
 
     def canceled_result(self, goal_handle, message: str):
         self.get_logger().warn(message)
-        goal_handle.canceled()
         result = PickBox.Result()
+        goal_handle.canceled()
         result.success = False
         result.message = message
         return result
@@ -272,10 +427,10 @@ class RobotArmActionServer(Node):
 
         home_joints = self.get_arm_joint_dict("home")
 
-        if not self.move_arm_joint_values(home_joints, "home"):
+        if not self.move_arm_joint_values_with_retry(home_joints, "home"):
             self.get_logger().warn("Startup home failed")
 
-        if not self.move_gripper_named("gripper_open"):
+        if not self.open_gripper():
             self.get_logger().warn("Startup gripper_open failed")
 
     def get_current_place_prefix(self) -> str:
@@ -285,40 +440,53 @@ class RobotArmActionServer(Node):
     def do_pick_place_sequence(self, goal_handle, side: str, place_prefix: str):
         home_joints = self.get_arm_joint_dict("home")
         grab_joints = self.get_arm_joint_dict("grab")
+        lift_joints = self.get_arm_joint_dict("lift")
         place_joints = self.get_arm_joint_dict(place_prefix)
 
-        self.publish_feedback(goal_handle, "gripper_open", 0.15)
-        if not self.move_gripper_named("gripper_open"):
+        self.publish_feedback(goal_handle, "gripper_open", 0.10)
+        if not self.open_gripper():
             return self.fail_result(goal_handle, "Failed at step: gripper_open")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after gripper_open")
 
-        self.publish_feedback(goal_handle, "move_grab_pose", 0.35)
-        if not self.move_arm_joint_values(grab_joints, "grab"):
+        self.publish_feedback(goal_handle, "move_grab_pose", 0.25)
+        if not self.move_arm_joint_values_with_retry(grab_joints, "grab"):
             return self.fail_result(goal_handle, "Failed at step: grab")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after grab")
 
-        self.publish_feedback(goal_handle, "gripper_close", 0.55)
-        if not self.move_gripper_named("gripper_close"):
+        self.publish_feedback(goal_handle, "gripper_close", 0.40)
+        if not self.close_gripper():
             return self.fail_result(goal_handle, "Failed at step: gripper_close")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after gripper_close")
 
-        self.publish_feedback(goal_handle, "move_place_pose", 0.75)
-        if not self.move_arm_joint_values(place_joints, place_prefix):
+        self.publish_feedback(goal_handle, "move_lift_pose", 0.55)
+        if not self.move_arm_joint_values_with_retry(lift_joints, "lift"):
+            return self.fail_result(goal_handle, "Failed at step: lift")
+        if goal_handle.is_cancel_requested:
+            return self.canceled_result(goal_handle, "Goal canceled after lift")
+
+        self.publish_feedback(goal_handle, "move_base_backward", 0.70)
+        if not self.move_base_backward(goal_handle):
+            return self.fail_result(goal_handle, "Failed at step: move_base_backward")
+        if goal_handle.is_cancel_requested:
+            return self.canceled_result(goal_handle, "Goal canceled after move_base_backward")
+
+        self.publish_feedback(goal_handle, "move_place_pose", 0.85)
+        if not self.move_arm_joint_values_with_retry(place_joints, place_prefix):
             return self.fail_result(goal_handle, f"Failed at step: {place_prefix}")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after place pose")
 
-        self.publish_feedback(goal_handle, "release_box", 0.90)
-        if not self.move_gripper_named("gripper_open"):
+        self.publish_feedback(goal_handle, "release_box", 0.95)
+        if not self.open_gripper():
             return self.fail_result(goal_handle, "Failed at step: release gripper_open")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after release")
 
         self.publish_feedback(goal_handle, "return_home", 1.00)
-        if not self.move_arm_joint_values(home_joints, "home"):
+        if not self.move_arm_joint_values_with_retry(home_joints, "home"):
             return self.fail_result(goal_handle, "Failed at step: home")
 
         if self.placed_box_count < self.max_box_count:
@@ -341,14 +509,6 @@ class RobotArmActionServer(Node):
             f"using place1..place{restore_count} -> restore"
         )
 
-        # For each box:
-        # 1) open gripper
-        # 2) move to placeN
-        # 3) close gripper
-        # 4) move to restore
-        # 5) open gripper
-        # After all:
-        # 6) move home
         total_major_steps = restore_count * 5 + 1
         major_step = 0
 
@@ -359,14 +519,13 @@ class RobotArmActionServer(Node):
             if goal_handle.is_cancel_requested:
                 return self.canceled_result(goal_handle, f"Restore canceled before {place_prefix}")
 
-            # Step 1: open gripper before pickup
             major_step += 1
             self.publish_feedback(
                 goal_handle,
                 f"{place_prefix}_open_before_pick",
                 major_step / total_major_steps
             )
-            if not self.move_gripper_named("gripper_open"):
+            if not self.open_gripper():
                 return self.fail_result(
                     goal_handle,
                     f"Restore failed: gripper_open before {place_prefix}"
@@ -375,27 +534,25 @@ class RobotArmActionServer(Node):
             if goal_handle.is_cancel_requested:
                 return self.canceled_result(goal_handle, f"Restore canceled before move to {place_prefix}")
 
-            # Step 2: move to place position
             major_step += 1
             self.publish_feedback(
                 goal_handle,
                 f"move_{place_prefix}",
                 major_step / total_major_steps
             )
-            if not self.move_arm_joint_values(place_joints, place_prefix):
+            if not self.move_arm_joint_values_with_retry(place_joints, place_prefix):
                 return self.fail_result(goal_handle, f"Restore failed: move to {place_prefix}")
 
             if goal_handle.is_cancel_requested:
                 return self.canceled_result(goal_handle, f"Restore canceled at {place_prefix}")
 
-            # Step 3: close gripper after reaching place
             major_step += 1
             self.publish_feedback(
                 goal_handle,
                 f"close_at_{place_prefix}",
                 major_step / total_major_steps
             )
-            if not self.move_gripper_named("gripper_close"):
+            if not self.close_gripper():
                 return self.fail_result(
                     goal_handle,
                     f"Restore failed: gripper_close at {place_prefix}"
@@ -404,14 +561,13 @@ class RobotArmActionServer(Node):
             if goal_handle.is_cancel_requested:
                 return self.canceled_result(goal_handle, f"Restore canceled after closing at {place_prefix}")
 
-            # Step 4: move to restore pose
             major_step += 1
             self.publish_feedback(
                 goal_handle,
                 f"move_restore_from_{place_prefix}",
                 major_step / total_major_steps
             )
-            if not self.move_arm_joint_values(restore_joints, "restore"):
+            if not self.move_arm_joint_values_with_retry(restore_joints, "restore"):
                 return self.fail_result(
                     goal_handle,
                     f"Restore failed: move to restore from {place_prefix}"
@@ -420,23 +576,21 @@ class RobotArmActionServer(Node):
             if goal_handle.is_cancel_requested:
                 return self.canceled_result(goal_handle, f"Restore canceled at restore from {place_prefix}")
 
-            # Step 5: open gripper at restore pose
             major_step += 1
             self.publish_feedback(
                 goal_handle,
                 f"open_at_restore_from_{place_prefix}",
                 major_step / total_major_steps
             )
-            if not self.move_gripper_named("gripper_open"):
+            if not self.open_gripper():
                 return self.fail_result(
                     goal_handle,
                     f"Restore failed: gripper_open at restore from {place_prefix}"
                 )
 
-        # Final: return home
         major_step += 1
         self.publish_feedback(goal_handle, "restore_return_home", major_step / total_major_steps)
-        if not self.move_arm_joint_values(home_joints, "home"):
+        if not self.move_arm_joint_values_with_retry(home_joints, "home"):
             return self.fail_result(goal_handle, "Restore failed: return home")
 
         return self.success_result(

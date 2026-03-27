@@ -50,7 +50,7 @@ class TripleToFNode(Node):
 
         sensor = adafruit_vl53l0x.VL53L0X(self.i2c)
         sensor.set_address(new_address)
-
+        # sensor.measurement_timing_budget = 50000
         self.get_logger().info(
             f"{name.capitalize()} sensor initialized at I2C address 0x{new_address:02X}"
         )
