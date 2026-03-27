@@ -67,7 +67,7 @@ class Task1MazeNode(Node):
         self.declare_parameter('wall_clear_distance', 0.35)
         self.declare_parameter('turn_open_distance', 0.34)
         self.declare_parameter('min_valid_range', 0.04)
-        self.declare_parameter('max_valid_range', 10)
+        self.declare_parameter('max_valid_range', 16)
         self.declare_parameter('wall_loss_confirm_cycles', 5)
 
         # =========================
@@ -120,13 +120,14 @@ class Task1MazeNode(Node):
         # Feed-forward wall escape
         # =========================
         self.declare_parameter('ff_enabled', True)
-        self.declare_parameter('ff_trigger_delta', 0.006)          # m per cycle trend threshold
-        self.declare_parameter('ff_trigger_cycles', 3)             # consecutive toward-wall cycles
-        self.declare_parameter('ff_turn_mag', 0.18)                # fixed angular pulse
-        self.declare_parameter('ff_hold_cycles', 6)                # pulse duration
-        self.declare_parameter('ff_cooldown_cycles', 8)            # delay before re-arm
-        self.declare_parameter('ff_front_min_distance', 0.32)      # disable near front obstacle
-        self.declare_parameter('ff_edge_lock_block', True)         # avoid triggering during edge lock
+        self.declare_parameter('ff_trigger_delta', 0.005)
+        self.declare_parameter('ff_trigger_cycles', 2)
+        self.declare_parameter('ff_turn_mag', 0.35)
+        self.declare_parameter('ff_hold_cycles', 12)
+        self.declare_parameter('ff_cooldown_cycles', 5)
+        self.declare_parameter('ff_front_min_distance', 0.1)
+        self.declare_parameter('ff_edge_lock_block', True)
+        self.declare_parameter('ff_heading_suppress_gain', 0.4)
 
         # =========================
         # Debug
@@ -210,6 +211,7 @@ class Task1MazeNode(Node):
         self.ff_cooldown_cycles = int(self.get_parameter('ff_cooldown_cycles').value)
         self.ff_front_min_distance = float(self.get_parameter('ff_front_min_distance').value)
         self.ff_edge_lock_block = bool(self.get_parameter('ff_edge_lock_block').value)
+        self.ff_heading_suppress_gain = float(self.get_parameter('ff_heading_suppress_gain').value)
 
         self.debug_logs = bool(self.get_parameter('debug_logs').value)
         self.debug_every_n_cycles = int(self.get_parameter('debug_every_n_cycles').value)
@@ -410,19 +412,23 @@ class Task1MazeNode(Node):
             f'lockL={self.left_edge_locked} lockR={self.right_edge_locked}'
         )
 
+        # Release both locks
         self.left_edge_locked = False
         self.right_edge_locked = False
 
+        # Throw away old side values so decision cannot use stale readings
         self.left_range = None
         self.right_range = None
         self.left_valid = False
         self.right_valid = False
 
+        # Clear wall state memory for decision phase
         self.left_wall_present = False
         self.right_wall_present = False
         self.left_loss_counter = 0
         self.right_loss_counter = 0
 
+        # Reset fresh decision accumulators
         self.left_decision_range = None
         self.right_decision_range = None
         self.left_decision_samples = 0
@@ -488,6 +494,7 @@ class Task1MazeNode(Node):
                 self.left_decision_range, r, self.decision_filter_alpha
             )
             self.left_decision_samples += 1
+
             self.left_range = self.left_decision_range
             self.left_valid = True
 
@@ -556,6 +563,7 @@ class Task1MazeNode(Node):
                 self.right_decision_range, r, self.decision_filter_alpha
             )
             self.right_decision_samples += 1
+
             self.right_range = self.right_decision_range
             self.right_valid = True
 
@@ -706,8 +714,10 @@ class Task1MazeNode(Node):
         self.ff_cooldown_counter = self.ff_cooldown_cycles
         self.debug_print(f'[FF_START] dir={direction.value} reason={reason}')
 
+    def ff_pulse_active(self):
+        return self.ff_hold_counter > 0
+
     def compute_feedforward_term(self):
-        # keep active pulse running first
         if self.ff_hold_counter > 0:
             self.ff_hold_counter -= 1
 
@@ -740,13 +750,12 @@ class Task1MazeNode(Node):
             self.reset_ff_trackers()
             return 0.0
 
-        # exactly one wall visible -> detect drift toward that wall
         if left and not right:
-            if self.prev_left_ff_range is not None:
-                if self.left_range < (self.prev_left_ff_range - self.ff_trigger_delta):
-                    self.left_toward_wall_count += 1
-                else:
-                    self.left_toward_wall_count = max(0, self.left_toward_wall_count - 1)
+            prev = self.prev_left_ff_range
+            if prev is not None and self.left_range < (prev - self.ff_trigger_delta):
+                self.left_toward_wall_count += 1
+            else:
+                self.left_toward_wall_count = max(0, self.left_toward_wall_count - 1)
 
             self.prev_left_ff_range = self.left_range
             self.prev_right_ff_range = self.right_range
@@ -754,7 +763,7 @@ class Task1MazeNode(Node):
 
             self.debug_periodic(
                 f'[FF_MONITOR_LEFT] left={self.fmt(self.left_range)} '
-                f'prev={self.fmt(self.prev_left_ff_range)} count={self.left_toward_wall_count}'
+                f'prev={self.fmt(prev)} count={self.left_toward_wall_count}'
             )
 
             if self.left_toward_wall_count >= self.ff_trigger_cycles:
@@ -765,11 +774,11 @@ class Task1MazeNode(Node):
             return 0.0
 
         if right and not left:
-            if self.prev_right_ff_range is not None:
-                if self.right_range < (self.prev_right_ff_range - self.ff_trigger_delta):
-                    self.right_toward_wall_count += 1
-                else:
-                    self.right_toward_wall_count = max(0, self.right_toward_wall_count - 1)
+            prev = self.prev_right_ff_range
+            if prev is not None and self.right_range < (prev - self.ff_trigger_delta):
+                self.right_toward_wall_count += 1
+            else:
+                self.right_toward_wall_count = max(0, self.right_toward_wall_count - 1)
 
             self.prev_right_ff_range = self.right_range
             self.prev_left_ff_range = self.left_range
@@ -777,7 +786,7 @@ class Task1MazeNode(Node):
 
             self.debug_periodic(
                 f'[FF_MONITOR_RIGHT] right={self.fmt(self.right_range)} '
-                f'prev={self.fmt(self.prev_right_ff_range)} count={self.right_toward_wall_count}'
+                f'prev={self.fmt(prev)} count={self.right_toward_wall_count}'
             )
 
             if self.right_toward_wall_count >= self.ff_trigger_cycles:
@@ -787,7 +796,6 @@ class Task1MazeNode(Node):
 
             return 0.0
 
-        # both walls or no walls -> reset monitor
         self.reset_ff_trackers()
         return 0.0
 
@@ -945,6 +953,10 @@ class Task1MazeNode(Node):
         self.maybe_update_target_heading(self.mode)
         heading_term = self.compute_heading_term(self.mode)
 
+        # Let FF pulse dominate more when active
+        if self.ff_pulse_active():
+            heading_term *= self.ff_heading_suppress_gain
+
         wall_weight = 0.0
         if self.mode == 'BOTH_WALLS':
             wall_weight = self.wall_weight_both
@@ -954,7 +966,8 @@ class Task1MazeNode(Node):
         raw_ang = wall_weight * wall_term + heading_term + ff_term
 
         self.debug_periodic(
-            f'[FOLLOW_CTRL] mode={self.mode} wall={wall_term:.3f} head={heading_term:.3f} ff={ff_term:.3f} raw={raw_ang:.3f}'
+            f'[FOLLOW_CTRL] mode={self.mode} wall={wall_term:.3f} head={heading_term:.3f} '
+            f'ff={ff_term:.3f} ff_active={self.ff_pulse_active()} raw={raw_ang:.3f}'
         )
 
         raw_ang = self.clamp(raw_ang, -self.max_angular, self.max_angular)
