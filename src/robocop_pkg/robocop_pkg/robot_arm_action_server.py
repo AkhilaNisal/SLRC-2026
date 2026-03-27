@@ -184,8 +184,8 @@ class RobotArmActionServer(Node):
         self.declare_parameter("restore.arm2_gripper_base_joint", 0.6109)
  
         # gripper
-        self.declare_parameter("gripper_open.gripper_base_left_joint", -0.1)
-        self.declare_parameter("gripper_close.gripper_base_left_joint", -0.9144)
+        self.declare_parameter("gripper_open.gripper_base_left_joint", -0.9)
+        self.declare_parameter("gripper_close.gripper_base_left_joint", 0.5)
 
         self.declare_parameter("restore_box_count", 3)
 

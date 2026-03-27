@@ -9,6 +9,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Int64, Float32, Empty
 
 
 class StepperControlNode(Node):
@@ -53,6 +54,14 @@ class StepperControlNode(Node):
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('cmd_distance_topic', '/cmd_distance')
 
+        # Published topics
+        self.declare_parameter('left_steps_topic', '/stepper/left_steps_total')
+        self.declare_parameter('right_steps_topic', '/stepper/right_steps_total')
+        self.declare_parameter('distance_total_topic', '/distance_total')
+        self.declare_parameter('distance_since_reset_topic', '/distance_since_reset')
+        self.declare_parameter('reset_distance_topic', '/reset_distance')
+        self.declare_parameter('distance_pub_rate_hz', 10.0)
+
         # =========================
         # Load parameters
         # =========================
@@ -84,6 +93,13 @@ class StepperControlNode(Node):
 
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
         self.cmd_distance_topic = str(self.get_parameter('cmd_distance_topic').value)
+
+        self.left_steps_topic = str(self.get_parameter('left_steps_topic').value)
+        self.right_steps_topic = str(self.get_parameter('right_steps_topic').value)
+        self.distance_total_topic = str(self.get_parameter('distance_total_topic').value)
+        self.distance_since_reset_topic = str(self.get_parameter('distance_since_reset_topic').value)
+        self.reset_distance_topic = str(self.get_parameter('reset_distance_topic').value)
+        self.distance_pub_rate_hz = float(self.get_parameter('distance_pub_rate_hz').value)
 
         valid_microsteps = [1, 2, 4, 8, 16]
         if self.microsteps not in valid_microsteps:
@@ -150,9 +166,6 @@ class StepperControlNode(Node):
         # =========================
         # Motion state
         # =========================
-        # Modes:
-        #   VEL  -> follow /cmd_vel
-        #   DIST -> execute exact per-wheel distance command
         self.control_mode = 'VEL'
 
         # Velocity mode
@@ -171,6 +184,27 @@ class StepperControlNode(Node):
         self.lock = threading.Lock()
         self.running = True
 
+        # Last commanded motion classification
+        self.last_cmd_linear_x = 0.0
+        self.last_cmd_angular_z = 0.0
+        self.linear_motion_active = False
+
+        # =========================
+        # Step / distance state
+        # =========================
+        self.left_steps_total = 0
+        self.right_steps_total = 0
+
+        # raw total distance from all executed wheel steps
+        self.distance_total = 0.0
+
+        # straight-line segment distance only
+        self.distance_since_reset = 0.0
+
+        # step references for straight segment accumulation
+        self.linear_start_left_steps = 0
+        self.linear_start_right_steps = 0
+
         # =========================
         # ROS interfaces
         # =========================
@@ -188,7 +222,23 @@ class StepperControlNode(Node):
             10
         )
 
+        self.reset_distance_sub = self.create_subscription(
+            Empty,
+            self.reset_distance_topic,
+            self.reset_distance_callback,
+            10
+        )
+
+        self.left_steps_pub = self.create_publisher(Int64, self.left_steps_topic, 10)
+        self.right_steps_pub = self.create_publisher(Int64, self.right_steps_topic, 10)
+        self.distance_total_pub = self.create_publisher(Float32, self.distance_total_topic, 10)
+        self.distance_since_reset_pub = self.create_publisher(Float32, self.distance_since_reset_topic, 10)
+
         self.watchdog_timer = self.create_timer(0.05, self.watchdog_callback)
+        self.distance_pub_timer = self.create_timer(
+            1.0 / max(1e-3, self.distance_pub_rate_hz),
+            self.publish_distance_topics
+        )
 
         # =========================
         # Motor threads
@@ -219,6 +269,10 @@ class StepperControlNode(Node):
         self.get_logger().info(
             f'cmd_vel_topic={self.cmd_vel_topic}, cmd_distance_topic={self.cmd_distance_topic}'
         )
+        self.get_logger().info(
+            f'Publishing: {self.left_steps_topic}, {self.right_steps_topic}, '
+            f'{self.distance_total_topic}, {self.distance_since_reset_topic}'
+        )
 
     def enable_drivers(self, enable: bool):
         if self.enable_active_low:
@@ -232,12 +286,23 @@ class StepperControlNode(Node):
     def distance_m_to_steps(self, distance_m: float) -> int:
         return int(round(distance_m / self.meters_per_step))
 
+    def start_new_linear_segment(self):
+        self.distance_since_reset = 0.0
+        self.linear_start_left_steps = self.left_steps_total
+        self.linear_start_right_steps = self.right_steps_total
+
+    def update_linear_distance_from_steps(self):
+        left_delta = self.left_steps_total - self.linear_start_left_steps
+        right_delta = self.right_steps_total - self.linear_start_right_steps
+
+        avg_steps = 0.5 * (abs(left_delta) + abs(right_delta))
+        self.distance_since_reset = avg_steps * self.meters_per_step
+
     def cmd_vel_callback(self, msg: Twist):
         linear_x = float(msg.linear.x)
         angular_z = float(msg.angular.z)
 
         with self.lock:
-            # Ignore /cmd_vel while exact distance motion is active
             if self.control_mode == 'DIST':
                 return
 
@@ -260,6 +325,21 @@ class StepperControlNode(Node):
             self.target_right_sps = right_sps
             self.last_cmd_time = time.monotonic()
 
+            self.last_cmd_linear_x = linear_x
+            self.last_cmd_angular_z = angular_z
+
+            # Straight linear motion only -> track distance
+            if abs(angular_z) < 1e-6 and abs(linear_x) > 1e-6:
+                if not self.linear_motion_active:
+                    self.linear_motion_active = True
+                    self.start_new_linear_segment()
+            else:
+                # Any angular command resets straight distance
+                self.linear_motion_active = False
+                self.distance_since_reset = 0.0
+                self.linear_start_left_steps = self.left_steps_total
+                self.linear_start_right_steps = self.right_steps_total
+
     def cmd_distance_callback(self, msg: Float32MultiArray):
         if len(msg.data) < 2:
             self.get_logger().warn('cmd_distance requires [left_distance_m, right_distance_m]')
@@ -274,13 +354,11 @@ class StepperControlNode(Node):
         with self.lock:
             self.control_mode = 'DIST'
 
-            # Stop velocity mode immediately
             self.target_left_sps = 0.0
             self.target_right_sps = 0.0
             self.current_left_sps = 0.0
             self.current_right_sps = 0.0
 
-            # Set exact distance targets
             self.left_target_steps = left_steps
             self.right_target_steps = right_steps
             self.left_done_steps = 0
@@ -288,11 +366,24 @@ class StepperControlNode(Node):
 
             self.last_cmd_time = time.monotonic()
 
+            # distance mode is not considered straight cmd_vel distance tracking
+            self.linear_motion_active = False
+            self.distance_since_reset = 0.0
+            self.linear_start_left_steps = self.left_steps_total
+            self.linear_start_right_steps = self.right_steps_total
+
         self.get_logger().info(
             f'Received cmd_distance: '
             f'left={left_distance_m:.4f} m ({left_steps} steps), '
             f'right={right_distance_m:.4f} m ({right_steps} steps)'
         )
+
+    def reset_distance_callback(self, _msg: Empty):
+        with self.lock:
+            self.distance_since_reset = 0.0
+            self.linear_start_left_steps = self.left_steps_total
+            self.linear_start_right_steps = self.right_steps_total
+        self.get_logger().info('Distance since reset cleared.')
 
     def watchdog_callback(self):
         with self.lock:
@@ -302,6 +393,10 @@ class StepperControlNode(Node):
             if time.monotonic() - self.last_cmd_time > self.cmd_vel_timeout:
                 self.target_left_sps = 0.0
                 self.target_right_sps = 0.0
+                self.linear_motion_active = False
+                self.distance_since_reset = 0.0
+                self.linear_start_left_steps = self.left_steps_total
+                self.linear_start_right_steps = self.right_steps_total
 
     def ramp_toward(self, current: float, target: float, dt: float) -> float:
         delta = target - current
@@ -334,6 +429,46 @@ class StepperControlNode(Node):
         time.sleep(half_period)
         step_line.set_value(0)
         time.sleep(half_period)
+
+    def record_executed_step(self, side: str, positive_direction: bool):
+        signed_step = 1 if positive_direction else -1
+
+        with self.lock:
+            if side == 'left':
+                self.left_steps_total += signed_step
+            else:
+                self.right_steps_total += signed_step
+
+            # Keep total distance as average wheel travel contribution
+            # one wheel step contributes half a center step
+            self.distance_total += 0.5 * self.meters_per_step
+
+            # Update straight-line segment distance only during pure linear cmd_vel motion
+            if self.linear_motion_active:
+                self.update_linear_distance_from_steps()
+
+    def publish_distance_topics(self):
+        with self.lock:
+            left_steps_total = self.left_steps_total
+            right_steps_total = self.right_steps_total
+            distance_total = self.distance_total
+            distance_since_reset = self.distance_since_reset
+
+        msg_left = Int64()
+        msg_left.data = int(left_steps_total)
+        self.left_steps_pub.publish(msg_left)
+
+        msg_right = Int64()
+        msg_right.data = int(right_steps_total)
+        self.right_steps_pub.publish(msg_right)
+
+        msg_total = Float32()
+        msg_total.data = float(distance_total)
+        self.distance_total_pub.publish(msg_total)
+
+        msg_segment = Float32()
+        msg_segment.data = float(distance_since_reset)
+        self.distance_since_reset_pub.publish(msg_segment)
 
     def finish_distance_mode_if_done(self):
         with self.lock:
@@ -373,15 +508,9 @@ class StepperControlNode(Node):
             dt = now - last_time
             last_time = now
 
-            # =========================
-            # Check current mode
-            # =========================
             with self.lock:
                 mode = self.control_mode
 
-            # =========================
-            # Distance mode
-            # =========================
             if mode == 'DIST':
                 with self.lock:
                     if side == 'left':
@@ -407,12 +536,10 @@ class StepperControlNode(Node):
                     else:
                         self.right_done_steps += 1 if positive_direction else -1
 
+                self.record_executed_step(side, positive_direction)
                 self.finish_distance_mode_if_done()
                 continue
 
-            # =========================
-            # Velocity mode
-            # =========================
             with self.lock:
                 if side == 'left':
                     self.current_left_sps = self.ramp_toward(
@@ -437,6 +564,7 @@ class StepperControlNode(Node):
             self.set_direction(dir_line, positive_direction, dir_inverted)
 
             self.pulse_once(step_line, abs(current_sps))
+            self.record_executed_step(side, positive_direction)
 
     def destroy_node(self):
         self.running = False

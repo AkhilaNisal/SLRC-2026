@@ -9,7 +9,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import Range
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Int32, Empty
 
 
 class NavState(Enum):
@@ -39,6 +39,15 @@ class Task1MazeNode(Node):
         self.declare_parameter('right_range_topic', '/robocop/ds_right')
         self.declare_parameter('gyro_angle_topic', '/gyro_angle')
 
+        # Junction distance / counting topics
+        self.declare_parameter('distance_since_reset_topic', '/distance_since_reset')
+        self.declare_parameter('reset_distance_topic', '/reset_distance')
+        self.declare_parameter('junction_count_topic', '/junction_count')
+        self.declare_parameter('dead_end_count_topic', '/dead_end_count')
+
+        # Cell counting topic
+        self.declare_parameter('cell_count_topic', '/cell_count')
+
         # =========================
         # Rates
         # =========================
@@ -67,7 +76,7 @@ class Task1MazeNode(Node):
         self.declare_parameter('wall_clear_distance', 0.35)
         self.declare_parameter('turn_open_distance', 0.34)
         self.declare_parameter('min_valid_range', 0.04)
-        self.declare_parameter('max_valid_range', 16)
+        self.declare_parameter('max_valid_range', 16.0)
         self.declare_parameter('wall_loss_confirm_cycles', 5)
 
         # =========================
@@ -130,6 +139,19 @@ class Task1MazeNode(Node):
         self.declare_parameter('ff_heading_suppress_gain', 0.4)
 
         # =========================
+        # Junction counting
+        # =========================
+        self.declare_parameter('junction_min_distance_m', 0.12)
+        self.declare_parameter('count_pass_junctions', True)
+        self.declare_parameter('count_blocked_junctions', True)
+        self.declare_parameter('count_dead_ends', True)
+
+        # =========================
+        # Cell counting
+        # =========================
+        self.declare_parameter('cell_length_m', 0.40)
+
+        # =========================
         # Debug
         # =========================
         self.declare_parameter('debug_logs', True)
@@ -155,6 +177,12 @@ class Task1MazeNode(Node):
         self.front_range_topic = self.get_parameter('front_range_topic').value
         self.right_range_topic = self.get_parameter('right_range_topic').value
         self.gyro_angle_topic = self.get_parameter('gyro_angle_topic').value
+
+        self.distance_since_reset_topic = self.get_parameter('distance_since_reset_topic').value
+        self.reset_distance_topic = self.get_parameter('reset_distance_topic').value
+        self.junction_count_topic = self.get_parameter('junction_count_topic').value
+        self.dead_end_count_topic = self.get_parameter('dead_end_count_topic').value
+        self.cell_count_topic = self.get_parameter('cell_count_topic').value
 
         self.control_rate_hz = float(self.get_parameter('control_rate_hz').value)
 
@@ -212,6 +240,13 @@ class Task1MazeNode(Node):
         self.ff_front_min_distance = float(self.get_parameter('ff_front_min_distance').value)
         self.ff_edge_lock_block = bool(self.get_parameter('ff_edge_lock_block').value)
         self.ff_heading_suppress_gain = float(self.get_parameter('ff_heading_suppress_gain').value)
+
+        self.junction_min_distance_m = float(self.get_parameter('junction_min_distance_m').value)
+        self.count_pass_junctions = bool(self.get_parameter('count_pass_junctions').value)
+        self.count_blocked_junctions = bool(self.get_parameter('count_blocked_junctions').value)
+        self.count_dead_ends = bool(self.get_parameter('count_dead_ends').value)
+
+        self.cell_length_m = float(self.get_parameter('cell_length_m').value)
 
         self.debug_logs = bool(self.get_parameter('debug_logs').value)
         self.debug_every_n_cycles = int(self.get_parameter('debug_every_n_cycles').value)
@@ -290,6 +325,20 @@ class Task1MazeNode(Node):
         self.last_right_raw = None
         self.last_front_raw = None
 
+        # Junction counting state
+        self.distance_since_reset_m = 0.0
+        self.junction_count = 0
+        self.dead_end_count = 0
+        self.pass_junction_count = 0
+        self.blocked_junction_count = 0
+
+        self.pending_block_event = False
+        self.pending_block_event_distance = 0.0
+
+        # Cell counting state
+        self.cell_count = 0
+        self.segment_cells_counted = 0
+
         # ROS interfaces
         self.left_sub = self.create_subscription(
             Range, self.left_range_topic, self.left_cb, qos_profile_sensor_data
@@ -304,13 +353,30 @@ class Task1MazeNode(Node):
             Float32, self.gyro_angle_topic, self.gyro_cb, qos_profile_sensor_data
         )
 
+        self.distance_sub = self.create_subscription(
+            Float32, self.distance_since_reset_topic, self.distance_since_reset_cb, 10
+        )
+
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.reset_distance_pub = self.create_publisher(Empty, self.reset_distance_topic, 10)
+        self.junction_count_pub = self.create_publisher(Int32, self.junction_count_topic, 10)
+        self.dead_end_count_pub = self.create_publisher(Int32, self.dead_end_count_topic, 10)
+        self.cell_count_pub = self.create_publisher(Int32, self.cell_count_topic, 10)
+
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self.control_loop)
 
         self.get_logger().info('Task1 maze node started')
         self.get_logger().info(
             f'left={self.left_range_topic}, front={self.front_range_topic}, '
             f'right={self.right_range_topic}, gyro={self.gyro_angle_topic}'
+        )
+        self.get_logger().info(
+            f'junction counting enabled | distance_topic={self.distance_since_reset_topic} '
+            f'| min_spacing={self.junction_min_distance_m:.3f} m'
+        )
+        self.get_logger().info(
+            f'cell counting enabled | cell_length_m={self.cell_length_m:.3f} '
+            f'| cell_topic={self.cell_count_topic}'
         )
 
     # ============================================================
@@ -405,12 +471,118 @@ class Task1MazeNode(Node):
         if (self.debug_cycle_counter % self.debug_every_n_cycles) == 0:
             self.get_logger().info(msg)
 
+    def distance_since_reset_cb(self, msg: Float32):
+        self.distance_since_reset_m = float(msg.data)
+
+    def publish_counts(self):
+        j = Int32()
+        j.data = int(self.junction_count)
+        self.junction_count_pub.publish(j)
+
+        d = Int32()
+        d.data = int(self.dead_end_count)
+        self.dead_end_count_pub.publish(d)
+
+    def publish_cell_count(self):
+        c = Int32()
+        c.data = int(self.cell_count)
+        self.cell_count_pub.publish(c)
+
+    def update_cell_count(self):
+        if self.cell_length_m <= 0.0:
+            return
+
+        cells_now = int(self.distance_since_reset_m / self.cell_length_m)
+
+        if cells_now > self.segment_cells_counted:
+            new_cells = cells_now - self.segment_cells_counted
+            self.segment_cells_counted = cells_now
+            self.cell_count += new_cells
+            self.publish_cell_count()
+
+            self.get_logger().info(
+                f'[CELL_COUNT] total_cells={self.cell_count} '
+                f'segment_cells={self.segment_cells_counted} '
+                f'distance={self.distance_since_reset_m:.3f}'
+            )
+
+    def reset_distance_segment(self):
+        self.reset_distance_pub.publish(Empty())
+        self.distance_since_reset_m = 0.0
+        self.segment_cells_counted = 0
+
+    def can_count_new_event(self):
+        return self.distance_since_reset_m >= self.junction_min_distance_m
+
+    def count_pass_junction_event(self, left_open: bool, right_open: bool):
+        if not self.count_pass_junctions:
+            return
+        if not self.can_count_new_event():
+            self.debug_print(
+                f'[JUNCTION_PASS_SKIP] distance={self.distance_since_reset_m:.3f} < '
+                f'{self.junction_min_distance_m:.3f}'
+            )
+            return
+
+        self.junction_count += 1
+        self.pass_junction_count += 1
+        self.publish_counts()
+
+        side_txt = f'L={left_open}, R={right_open}'
+        self.get_logger().info(
+            f'[JUNCTION_PASS_COUNT] total={self.junction_count} '
+            f'pass={self.pass_junction_count} dead_ends={self.dead_end_count} '
+            f'distance={self.distance_since_reset_m:.3f} {side_txt}'
+        )
+        self.reset_distance_segment()
+
+    def count_block_or_dead_end_event(self, left_open: bool, right_open: bool):
+        if not self.pending_block_event:
+            return
+
+        if not self.can_count_new_event():
+            self.debug_print(
+                f'[JUNCTION_BLOCK_SKIP] distance={self.distance_since_reset_m:.3f} < '
+                f'{self.junction_min_distance_m:.3f}'
+            )
+            self.pending_block_event = False
+            return
+
+        if left_open or right_open:
+            if self.count_blocked_junctions:
+                self.junction_count += 1
+                self.blocked_junction_count += 1
+                self.publish_counts()
+
+                self.get_logger().info(
+                    f'[JUNCTION_BLOCK_COUNT] total={self.junction_count} '
+                    f'blocked={self.blocked_junction_count} dead_ends={self.dead_end_count} '
+                    f'distance={self.distance_since_reset_m:.3f} '
+                    f'L={left_open}, R={right_open}'
+                )
+        else:
+            if self.count_dead_ends:
+                self.dead_end_count += 1
+                self.publish_counts()
+
+                self.get_logger().info(
+                    f'[DEAD_END_COUNT] total_junctions={self.junction_count} '
+                    f'dead_ends={self.dead_end_count} distance={self.distance_since_reset_m:.3f}'
+                )
+
+        self.reset_distance_segment()
+        self.pending_block_event = False
+
     def begin_refresh_for_decision(self):
         self.debug_print(
             f'[BEGIN_REFRESH] front={self.fmt(self.front_range)} '
             f'oldL={self.fmt(self.left_range)} oldR={self.fmt(self.right_range)} '
             f'lockL={self.left_edge_locked} lockR={self.right_edge_locked}'
         )
+
+        # mark blocked event candidate here, but count only after fresh side check
+        self.pending_block_event = True
+        self.pending_block_event_distance = self.distance_since_reset_m
 
         # Release both locks
         self.left_edge_locked = False
@@ -903,6 +1075,8 @@ class Task1MazeNode(Node):
         left_open = self.left_valid and self.left_range is not None and self.left_range > self.turn_open_distance
         right_open = self.right_valid and self.right_range is not None and self.right_range > self.turn_open_distance
 
+        self.count_block_or_dead_end_event(left_open, right_open)
+
         self.debug_print(
             f'[DECIDE] front={self.fmt(self.front_range)} '
             f'left_raw={self.fmt(self.last_left_raw)} left={self.fmt(self.left_range)} left_valid={self.left_valid} left_samples={self.left_decision_samples} left_open={left_open} '
@@ -1010,6 +1184,9 @@ class Task1MazeNode(Node):
     def control_loop(self):
         self.debug_cycle_counter += 1
 
+        # update cell count continuously from straight-line distance
+        self.update_cell_count()
+
         if not (self.left_valid or self.front_valid or self.right_valid or self.gyro_is_fresh()):
             self.stop_cmd()
             return
@@ -1031,11 +1208,29 @@ class Task1MazeNode(Node):
         # FOLLOW
         self.update_wall_presence()
 
+        left_open = self.left_valid and self.left_range is not None and self.left_range > self.turn_open_distance
+        right_open = self.right_valid and self.right_range is not None and self.right_range > self.turn_open_distance
+        front_open = (
+            self.front_valid and self.front_range is not None and
+            self.front_range > (self.front_stop_distance + self.front_stop_hysteresis)
+        )
+
+        # Count pass-through junctions during follow
+        if (
+            front_open and
+            (left_open or right_open) and
+            not self.recent_junction_block()
+        ):
+            self.count_pass_junction_event(left_open, right_open)
+            self.last_junction_time = self.now_sec()
+
         self.debug_periodic(
             f'[FOLLOW] front_raw={self.fmt(self.last_front_raw)} front={self.fmt(self.front_range)} '
             f'left_raw={self.fmt(self.last_left_raw)} left={self.fmt(self.left_range)} lockL={self.left_edge_locked} wallL={self.left_wall_present} '
             f'right_raw={self.fmt(self.last_right_raw)} right={self.fmt(self.right_range)} lockR={self.right_edge_locked} wallR={self.right_wall_present} '
-            f'mode={self.mode} ffHold={self.ff_hold_counter} ffCooldown={self.ff_cooldown_counter}'
+            f'mode={self.mode} ffHold={self.ff_hold_counter} ffCooldown={self.ff_cooldown_counter} '
+            f'dist={self.distance_since_reset_m:.3f} cells={self.cell_count} seg_cells={self.segment_cells_counted} '
+            f'junc={self.junction_count} dead={self.dead_end_count}'
         )
 
         stopped = self.follow_motion()
