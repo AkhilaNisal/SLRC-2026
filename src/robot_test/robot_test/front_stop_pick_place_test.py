@@ -16,8 +16,8 @@ class FrontStopPickPlaceTest(Node):
         super().__init__('front_stop_pick_place_test')
 
         # Motion parameters
-        self.declare_parameter('slow_distance_m', 0.30)      # start slowing
-        self.declare_parameter('stop_distance_m', 0.20)      # full stop
+        self.declare_parameter('slow_distance_m', 0.20)      # start slowing
+        self.declare_parameter('stop_distance_m', 0.13)      # full stop
         self.declare_parameter('max_speed', 0.10)            # max forward speed
         self.declare_parameter('control_period', 0.05)       # 20 Hz
         self.declare_parameter('stop_settle_sec', 1.0)       # wait before arm action

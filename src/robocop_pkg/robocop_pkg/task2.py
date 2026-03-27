@@ -15,7 +15,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-class WhiteLineFollowerWithTurnAndBoxCount(Node):
+class WhiteLineFollowerWithSensorPlot(Node):
     def __init__(self):
         super().__init__('task2')
 
@@ -30,18 +30,9 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         # =========================
         # Motion control
         # =========================
-        self.declare_parameter('forward_speed', 0.12)
-        self.declare_parameter('linear_speed', 0.15)
+        self.declare_parameter('linear_speed', 0.1)
         self.declare_parameter('kp', 0.004)
         self.declare_parameter('max_angular', 1.2)
-
-        self.declare_parameter('extra_forward_distance', 0.18)
-
-        self.declare_parameter('turn_left_angular_speed', 0.8)
-        self.declare_parameter('turn_left_90_time', 2.0)
-
-        # new
-        self.declare_parameter('post_turn_wait_time', 5.0)
 
         self.declare_parameter('search_linear', 0.04)
         self.declare_parameter('search_angular', 0.35)
@@ -51,10 +42,6 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         # =========================
         self.declare_parameter('roi_y_start', 0.60)
         self.declare_parameter('min_area', 5000)
-
-        self.declare_parameter('bottom_strip_height_ratio', 0.14)
-        self.declare_parameter('bottom_min_area', 2500)
-        self.declare_parameter('line_gone_frames', 5)
 
         self.declare_parameter('h_low', 0)
         self.declare_parameter('s_low', 0)
@@ -80,30 +67,15 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         self.left_range_topic = self.get_parameter('left_range_topic').value
         self.right_range_topic = self.get_parameter('right_range_topic').value
 
-        self.forward_speed = float(self.get_parameter('forward_speed').value)
         self.linear_speed = float(self.get_parameter('linear_speed').value)
         self.kp = float(self.get_parameter('kp').value)
         self.max_angular = float(self.get_parameter('max_angular').value)
-
-        self.extra_forward_distance = float(self.get_parameter('extra_forward_distance').value)
-        self.extra_forward_time = (
-            self.extra_forward_distance / self.forward_speed
-            if self.forward_speed > 1e-6 else 0.0
-        )
-
-        self.turn_left_angular_speed = float(self.get_parameter('turn_left_angular_speed').value)
-        self.turn_left_90_time = float(self.get_parameter('turn_left_90_time').value)
-        self.post_turn_wait_time = float(self.get_parameter('post_turn_wait_time').value)
 
         self.search_linear = float(self.get_parameter('search_linear').value)
         self.search_angular = float(self.get_parameter('search_angular').value)
 
         self.roi_y_start = float(self.get_parameter('roi_y_start').value)
         self.min_area = int(self.get_parameter('min_area').value)
-
-        self.bottom_strip_height_ratio = float(self.get_parameter('bottom_strip_height_ratio').value)
-        self.bottom_min_area = int(self.get_parameter('bottom_min_area').value)
-        self.line_gone_frames = int(self.get_parameter('line_gone_frames').value)
 
         self.h_low = int(self.get_parameter('h_low').value)
         self.s_low = int(self.get_parameter('s_low').value)
@@ -138,22 +110,10 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
 
         # =========================
-        # State machine
+        # State
         # =========================
-        self.STATE_APPROACH_LINE = 'APPROACH_LINE'
-        self.STATE_WAIT_LINE_DISAPPEAR = 'WAIT_LINE_DISAPPEAR'
-        self.STATE_VERIFY_ON_LINE_FORWARD = 'VERIFY_ON_LINE_FORWARD'
-        self.STATE_TURN_LEFT_90 = 'TURN_LEFT_90'
-        self.STATE_POST_TURN_WAIT = 'POST_TURN_WAIT'
         self.STATE_FOLLOW_LINE = 'FOLLOW_LINE'
-
-        self.state = self.STATE_APPROACH_LINE
-        self.turn_start_time = None
-        self.extra_forward_start_time = None
-        self.post_turn_wait_start_time = None
-
-        self.bottom_line_seen = False
-        self.bottom_gone_counter = 0
+        self.state = self.STATE_FOLLOW_LINE
 
         self.left_range = math.inf
         self.right_range = math.inf
@@ -180,16 +140,14 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
 
         cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
         cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("bottom_mask", cv2.WINDOW_NORMAL)
 
         self.get_logger().info(f"Subscribing image: {self.image_topic}")
         self.get_logger().info(f"Publishing cmd_vel: {self.cmd_vel_topic}")
         self.get_logger().info(f"Left range topic: {self.left_range_topic}")
         self.get_logger().info(f"Right range topic: {self.right_range_topic}")
-        self.get_logger().info(
-            f"Sequence: forward -> pass line -> extra forward {self.extra_forward_distance:.2f} m "
-            f"-> left 90 -> wait {self.post_turn_wait_time:.2f}s -> follow line -> start distance measure + box count"
-        )
+        self.get_logger().info("Starting directly with white line follower + sensor data recording.")
+
+        self.start_measurement()
 
     @staticmethod
     def clamp(x: float, lo: float, hi: float) -> float:
@@ -248,7 +206,7 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         self.get_logger().info("Started distance measurement, storage, and box counting.")
 
     def record_sensor_values(self):
-        if not self.measurement_started or self.state != self.STATE_FOLLOW_LINE:
+        if not self.measurement_started:
             return
 
         t = time.time() - self.measurement_start_wall_time
@@ -291,7 +249,7 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         return active_flag, detect_counter, release_counter, count_value
 
     def update_box_counts(self):
-        if not self.measurement_started or self.state != self.STATE_FOLLOW_LINE:
+        if not self.measurement_started:
             return
 
         (
@@ -349,97 +307,27 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         M = cv2.moments(mask)
         area = M["m00"]
 
-        bh = int(h * self.bottom_strip_height_ratio)
-        by0 = max(0, h - bh)
-        bottom_roi = frame[by0:h, 0:w]
-        bottom_mask = self.build_white_mask(bottom_roi)
-        Mb = cv2.moments(bottom_mask)
-        bottom_area = Mb["m00"]
-
         twist = Twist()
 
-        if self.state == self.STATE_APPROACH_LINE:
-            twist.linear.x = self.forward_speed
-            twist.angular.z = 0.0
+        if area > self.min_area:
+            cx = int(M["m10"] / area)
+            error = float(cx - (w // 2))
 
-            if bottom_area > self.bottom_min_area:
-                self.bottom_line_seen = True
-                self.state = self.STATE_WAIT_LINE_DISAPPEAR
-                self.bottom_gone_counter = 0
-                self.get_logger().info("White line reached robot area. Waiting until it disappears...")
+            ang = -self.kp * error
+            ang = self.clamp(ang, -self.max_angular, self.max_angular)
 
-        elif self.state == self.STATE_WAIT_LINE_DISAPPEAR:
-            twist.linear.x = self.forward_speed
-            twist.angular.z = 0.0
-
-            if bottom_area > self.bottom_min_area:
-                self.bottom_gone_counter = 0
-            else:
-                self.bottom_gone_counter += 1
-
-            if self.bottom_line_seen and self.bottom_gone_counter >= self.line_gone_frames:
-                self.state = self.STATE_VERIFY_ON_LINE_FORWARD
-                self.extra_forward_start_time = self.get_clock().now()
-                self.get_logger().info(
-                    f"White line passed under robot. Moving extra {self.extra_forward_distance:.2f} m before turn."
-                )
-
-        elif self.state == self.STATE_VERIFY_ON_LINE_FORWARD:
-            twist.linear.x = self.forward_speed
-            twist.angular.z = 0.0
-
-            elapsed = (self.get_clock().now() - self.extra_forward_start_time).nanoseconds / 1e9
-            if elapsed >= self.extra_forward_time:
-                self.state = self.STATE_TURN_LEFT_90
-                self.turn_start_time = self.get_clock().now()
-                self.get_logger().info("Extra forward motion done. Starting left 90 turn.")
-
-        elif self.state == self.STATE_TURN_LEFT_90:
-            twist.linear.x = 0.0
-            twist.angular.z = self.turn_left_angular_speed
-
-            elapsed = (self.get_clock().now() - self.turn_start_time).nanoseconds / 1e9
-            if elapsed >= self.turn_left_90_time:
-                self.state = self.STATE_POST_TURN_WAIT
-                self.post_turn_wait_start_time = self.get_clock().now()
-                self.get_logger().info(
-                    f"Left 90 turn complete. Waiting {self.post_turn_wait_time:.2f} s before white-line follower."
-                )
-
-        elif self.state == self.STATE_POST_TURN_WAIT:
-            twist.linear.x = 0.0
-            twist.angular.z = 0.0
-
-            elapsed = (self.get_clock().now() - self.post_turn_wait_start_time).nanoseconds / 1e9
-            if elapsed >= self.post_turn_wait_time:
-                self.state = self.STATE_FOLLOW_LINE
-                self.start_measurement()
-                self.get_logger().info("Post-turn wait complete. Starting white-line follower.")
-
-        elif self.state == self.STATE_FOLLOW_LINE:
-            if area > self.min_area:
-                cx = int(M["m10"] / area)
-                error = float(cx - (w // 2))
-
-                ang = -self.kp * error
-                ang = self.clamp(ang, -self.max_angular, self.max_angular)
-
-                twist.linear.x = self.linear_speed
-                twist.angular.z = ang
-            else:
-                twist.linear.x = self.search_linear
-                twist.angular.z = self.search_angular
-
-            self.update_box_counts()
-            self.record_sensor_values()
-
+            twist.linear.x = self.linear_speed
+            twist.angular.z = ang
         else:
-            twist.linear.x = 0.0
-            twist.angular.z = 0.0
+            twist.linear.x = self.search_linear
+            twist.angular.z = self.search_angular
+
+        self.update_box_counts()
+        self.record_sensor_values()
 
         self.cmd_pub.publish(twist)
 
-        if self.print_distances_every_frame and self.measurement_started and self.state == self.STATE_FOLLOW_LINE:
+        if self.print_distances_every_frame:
             self.get_logger().info(
                 f"STATE={self.state} "
                 f"left={self.fmt_range(self.left_range)} m "
@@ -453,10 +341,6 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         cv2.putText(vis, "FOLLOW ROI", (10, max(25, y0 - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        cv2.rectangle(vis, (0, by0), (w - 1, h - 1), (255, 0, 0), 2)
-        cv2.putText(vis, "BOTTOM CHECK", (10, max(50, by0 - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-
         if area > self.min_area:
             cx_vis = int(M["m10"] / area)
             cy_vis = y0 + (h - y0) // 2
@@ -466,7 +350,7 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
         cv2.putText(vis, f"STATE: {self.state}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-        cv2.putText(vis, f"main_area={int(area)} bottom_area={int(bottom_area)}", (10, 65),
+        cv2.putText(vis, f"main_area={int(area)}", (10, 65),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         cv2.putText(
@@ -504,7 +388,6 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
 
         cv2.imshow("camera", vis)
         cv2.imshow("mask", mask)
-        cv2.imshow("bottom_mask", bottom_mask)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -522,7 +405,7 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
             self.last_log_time = now
             self.get_logger().info(
                 f"fps~{self.frame_count} state={self.state} "
-                f"main_area={int(area)} bottom_area={int(bottom_area)} "
+                f"main_area={int(area)} "
                 f"left_range={self.display_range(self.left_range)} right_range={self.display_range(self.right_range)} "
                 f"counts(L,R)=({self.left_box_count},{self.right_box_count}) "
                 f"stored_samples={len(self.history_t)} "
@@ -533,7 +416,7 @@ class WhiteLineFollowerWithTurnAndBoxCount(Node):
 
 def main():
     rclpy.init()
-    node = WhiteLineFollowerWithTurnAndBoxCount()
+    node = WhiteLineFollowerWithSensorPlot()
     try:
         rclpy.spin(node)
     finally:

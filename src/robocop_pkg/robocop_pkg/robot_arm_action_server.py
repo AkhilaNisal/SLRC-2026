@@ -129,25 +129,25 @@ class RobotArmActionServer(Node):
         self.declare_parameter("home.arm1_arm2_joint", -1.2566)
         self.declare_parameter("home.arm2_gripper_base_joint", 0.9250)
 
-        # grab = [5, 56, 40, -79]
+        # grab = [5, 56, 40, -79]      5,71,40, -62
         self.declare_parameter("grab.base_rotating_waste_joint", 0.0873)
         self.declare_parameter("grab.rotating_waste_arm1_joint", 0.9774)
         self.declare_parameter("grab.arm1_arm2_joint", 0.6981)
         self.declare_parameter("grab.arm2_gripper_base_joint", -1.3788)
 
-        # lift = [5, 45, 40, -81]
+        # lift = [5, 45, 40, -81]     5,61,40,-68
         self.declare_parameter("lift.base_rotating_waste_joint", 0.0873)
         self.declare_parameter("lift.rotating_waste_arm1_joint", 0.7854)
         self.declare_parameter("lift.arm1_arm2_joint", 0.6981)
         self.declare_parameter("lift.arm2_gripper_base_joint", -1.4137)
 
-        # place1 = [-16, 12, -100, 67]
+        # place1 = [-16, 12, -100, 67]    -16,-7,-110,50
         self.declare_parameter("place1.base_rotating_waste_joint", -0.2793)
         self.declare_parameter("place1.rotating_waste_arm1_joint", 0.2094)
         self.declare_parameter("place1.arm1_arm2_joint", -1.7453)
         self.declare_parameter("place1.arm2_gripper_base_joint", 1.1694)
 
-        # place2 = [23, -4, -92, 75]
+        # place2 = [23, -4, -92, 75]    37, -4,-114,46
         self.declare_parameter("place2.base_rotating_waste_joint", 0.4014)
         self.declare_parameter("place2.rotating_waste_arm1_joint", -0.0698)
         self.declare_parameter("place2.arm1_arm2_joint", -1.6057)

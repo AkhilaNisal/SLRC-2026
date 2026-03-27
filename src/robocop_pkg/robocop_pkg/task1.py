@@ -132,7 +132,7 @@ class Task1MazeNode(Node):
         self.declare_parameter('ff_trigger_delta', 0.005)
         self.declare_parameter('ff_trigger_cycles', 2)
         self.declare_parameter('ff_turn_mag', 0.35)
-        self.declare_parameter('ff_hold_cycles', 12)
+        self.declare_parameter('ff_hold_cycles', 6)
         self.declare_parameter('ff_cooldown_cycles', 5)
         self.declare_parameter('ff_front_min_distance', 0.1)
         self.declare_parameter('ff_edge_lock_block', True)

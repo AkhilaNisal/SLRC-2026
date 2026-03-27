@@ -96,6 +96,14 @@ def generate_launch_description():
         output='screen',
     )
 
+    task2 = Node(
+        package='robocop_pkg',
+        executable='task2',   # must match setup.py entry point
+        name='task2',
+        output='screen',
+    
+    )
+
     task2_with_arm = Node(
         package='robocop_pkg',
         executable='task2_with_arm',   # must match setup.py entry point
