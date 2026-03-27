@@ -5,9 +5,7 @@ from setuptools import find_packages, setup
 package_name = 'robocop_pkg'
 data_files = []
 data_files.append(('share/ament_index/resource_index/packages', ['resource/' + package_name]))
-data_files.append(('share/' + package_name + '/launch', ['launch/robocop_launch.py']))
 data_files.append(('share/' + package_name + '/launch', ['launch/robocop_launch1.py']))
-data_files.append(('share/' + package_name + '/launch', ['launch/robocop_launchnew.py']))
 
 
 data_files.append(('share/' + package_name + '/worlds', ['worlds/my_world.wbt']))
@@ -41,24 +39,18 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'robocop_driver = robocop_pkg.robocop_driver:main',
-            'obstacle_avoider = robocop_pkg.obstacle_avoider:main',
-            'white_line_follower = robocop_pkg.white_line_follower:main',
-            'red_box_seeker = robocop_pkg.red_box_seeker:main',
-            'perspective_rectifier = robocop_pkg.perspective_rectifier:main',
-            'red_box_perpendicular_seeker = robocop_pkg.red_box_perpendicular_seeker:main',
-            'task2 = robocop_pkg.task2:main',
-            'task2_new = robocop_pkg.task2_new:main',
+            # Core task nodes
+            'task1 = robocop_pkg.task1:main',
             'task2_with_arm = robocop_pkg.task2_with_arm:main',
-            'pick_box_dummy_server = robocop_pkg.pick_box_dummy_server:main',
-            'robot_arm_action_server = robocop_pkg.robot_arm_action_server:main',
             'task3 = robocop_pkg.task3:main',
             'task_manager = robocop_pkg.task_manager:main',
-            'servo_node = robocop_pkg.servo_node:main',
-            'restore_test_client = robocop_pkg.restore_test_client:main',
-            'pick_place_test_client = robocop_pkg.pick_place_test_client:main',
+            # Arm control
+            'robot_arm_action_server = robocop_pkg.robot_arm_action_server:main',
             'robot_arm_centering_action_server = robocop_pkg.robot_arm_centering_action_server:main',
-            'task1 = robocop_pkg.task1:main',
+            'servo_node = robocop_pkg.servo_node:main',
+            # Vision nodes (run manually or added to launch as needed)
+            'red_box_seeker = robocop_pkg.red_box_seeker:main',
+            'red_box_perpendicular_seeker = robocop_pkg.red_box_perpendicular_seeker:main',
         ],
     },
 )
