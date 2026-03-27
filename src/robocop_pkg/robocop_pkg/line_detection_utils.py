@@ -19,15 +19,24 @@ def build_white_mask(bgr_img, h_low, s_low, v_low, h_high, s_high, v_high):
       - S: s_low  .. s_high  (0-255; low saturation = near-white/grey)
       - V: v_low  .. v_high  (0-255; high value = bright)
 
-    Gaussian blur + morphological opening remove salt-and-pepper noise and
-    small spurious blobs.
+    CLAHE normalises local brightness on the V channel before thresholding so
+    that fixed HSV ranges stay valid across shadows and bright spots.
+    Morphological closing bridges small gaps in the line (e.g. glare patches)
+    before opening removes isolated noise blobs.
     """
     hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
+
+    # Adaptive brightness normalisation — makes v_low/v_high lighting-invariant
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    hsv[:, :, 2] = clahe.apply(hsv[:, :, 2])
+
     lower = np.array([h_low, s_low, v_low], dtype=np.uint8)
     upper = np.array([h_high, s_high, v_high], dtype=np.uint8)
     mask = cv2.inRange(hsv, lower, upper)
     mask = cv2.GaussianBlur(mask, (5, 5), 0)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # bridge line gaps
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)   # remove noise blobs
     return mask
 
 

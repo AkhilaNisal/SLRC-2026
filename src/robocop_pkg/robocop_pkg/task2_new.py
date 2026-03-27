@@ -105,6 +105,9 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         self.declare_parameter('box_return_speed', 0.12)
 
+        # Debug visualization (disable on headless robot)
+        self.declare_parameter('debug', False)
+
         # =========================
         # Read params
         # =========================
@@ -176,6 +179,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.box_wait_time = float(self.get_parameter('box_wait_time').value)
 
         self.box_return_speed = float(self.get_parameter('box_return_speed').value)
+        self.debug = bool(self.get_parameter('debug').value)
 
         # =========================
         # ROS interfaces
@@ -245,10 +249,14 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.frame_count = 0
         self.last_log_time = self.get_clock().now()
 
-        cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("bottom_mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("red_mask", cv2.WINDOW_NORMAL)
+        if self.debug:
+            cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("bottom_mask", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("red_mask", cv2.WINDOW_NORMAL)
+            self.get_logger().info("Debug windows enabled. Press 'q' to quit.")
+        else:
+            self.get_logger().info("Debug windows disabled (headless mode). Set debug:=true to enable.")
 
         # initial startup sequence: same reusable line-cross logic
         self.configure_line_cross_sequence(
@@ -707,18 +715,19 @@ class WhiteLineFollowerWithBoxVisit(Node):
             2
         )
 
-        cv2.imshow("camera", vis)
-        cv2.imshow("mask", mask)
-        cv2.imshow("bottom_mask", bottom_mask)
-        cv2.imshow("red_mask", red_mask)
+        if self.debug:
+            cv2.imshow("camera", vis)
+            cv2.imshow("mask", mask)
+            cv2.imshow("bottom_mask", bottom_mask)
+            cv2.imshow("red_mask", red_mask)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            self.get_logger().info("Quit requested. Stopping robot.")
-            self.stop_robot()
-            rclpy.shutdown()
-            cv2.destroyAllWindows()
-            return
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                self.get_logger().info("Quit requested. Stopping robot.")
+                self.stop_robot()
+                rclpy.shutdown()
+                cv2.destroyAllWindows()
+                return
 
         self.frame_count += 1
         now = self.get_clock().now()
