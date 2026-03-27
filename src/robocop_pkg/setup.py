@@ -50,6 +50,7 @@ setup(
             'task2 = robocop_pkg.task2:main',
             'task2_new = robocop_pkg.task2_new:main',
             'task2_with_arm = robocop_pkg.task2_with_arm:main',
+            'task2_collector = robocop_pkg.task2_collector:main',
             'pick_box_dummy_server = robocop_pkg.pick_box_dummy_server:main',
             'robot_arm_action_server = robocop_pkg.robot_arm_action_server:main',
             'task3 = robocop_pkg.task3:main',

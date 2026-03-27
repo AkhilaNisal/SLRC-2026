@@ -12,8 +12,8 @@ def generate_launch_description():
 
     pca9685_bridge = ExecuteProcess(
         cmd=[
-            '/home/thunderbot/SLRC-2026/venv/bin/python',
-            '/home/thunderbot/SLRC-2026/src/rpi_arm_hardware/scripts/pca9685_bridge.py'
+            '/home/thunderbot/SLRC-2026-main/venv/bin/python',
+            '/home/thunderbot/SLRC-2026-main/src/rpi_arm_hardware/scripts/pca9685_bridge.py'
         ],
         name='pca9685_bridge',
         output='screen'
@@ -109,7 +109,18 @@ def generate_launch_description():
         executable='task2_with_arm',   # must match setup.py entry point
         name='task2_with_arm',
         output='screen',
-    
+
+    )
+
+    task2_collector = Node(
+        package='robocop_pkg',
+        executable='task2_collector',   # NEW: enhanced FSM with delta-ToF detection
+        name='task2_collector',
+        output='screen',
+        parameters=[{
+            'debug': False,
+            'target_box_count': 6,
+        }]
     )
 
     task3 = Node(
