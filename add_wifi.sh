@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Script to add WiFi credentials to Ubuntu Server on Raspberry Pi
-# Usage: ./add_wifi.sh "SSID" "PASSWORD"
+# Usage: ./add_wifi.sh [--connect] "SSID" "PASSWORD"
+#   --connect   Also attempt to connect to the network immediately after saving
 
 set -e
 
@@ -90,6 +91,7 @@ add_wifi_connection() {
         ssid "$SSID" \
         wifi-sec.key-mgmt wpa-psk \
         wifi-sec.psk "$PASSWORD" \
+        wifi-sec.psk-flags 0 \
         ipv4.method auto \
         connection.autoconnect yes \
         connection.autoconnect-priority 0 || {
@@ -103,9 +105,8 @@ add_wifi_connection() {
     print_success "WiFi connection profile created and saved!"
 }
 
-# Function to verify connection
+# Function to verify connection profile was saved
 verify_connection() {
-    # Check if the connection profile was saved
     if nmcli connection show "$SSID" &> /dev/null; then
         print_success "WiFi connection profile saved successfully!"
         print_info "The device will auto-connect when the '$SSID' network is available."
@@ -116,6 +117,23 @@ verify_connection() {
     fi
 }
 
+# Function to connect to the network immediately
+connect_now() {
+    print_info "Attempting to connect to '$SSID'..."
+    if nmcli connection up "$SSID"; then
+        print_success "Successfully connected to '$SSID'!"
+        print_info "Checking internet connectivity..."
+        if ping -c 1 8.8.8.8 &> /dev/null; then
+            print_success "Internet connection verified!"
+        else
+            print_warning "Internet connectivity check inconclusive. Please verify manually."
+        fi
+    else
+        print_error "Could not connect to '$SSID'. The network may be out of range."
+        print_info "Credentials are still saved and will auto-connect when available."
+    fi
+}
+
 # Main function
 main() {
     print_info "WiFi Configuration Script for Ubuntu Server on Raspberry Pi"
@@ -123,6 +141,13 @@ main() {
     
     # Check if running as root
     check_root
+
+    # Parse optional --connect flag
+    CONNECT=false
+    if [[ "$1" == "--connect" ]]; then
+        CONNECT=true
+        shift
+    fi
     
     # Get SSID and PASSWORD from arguments or prompt
     if [[ $# -ge 2 ]]; then
@@ -143,11 +168,18 @@ main() {
     # Add WiFi connection
     add_wifi_connection
     
-    # Verify connection
+    # Verify connection profile was saved
     if verify_connection; then
         print_success "WiFi has been successfully configured and saved!"
         echo ""
         print_info "Your WiFi connection is now persistent and will reconnect automatically on reboot."
+        
+        # Optionally connect immediately
+        if [[ "$CONNECT" == true ]]; then
+            echo ""
+            connect_now
+        fi
+        
         exit 0
     else
         print_error "Failed to configure WiFi connection."
