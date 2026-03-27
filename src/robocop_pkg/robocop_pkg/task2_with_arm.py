@@ -99,8 +99,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         # Distance sensing / filter
         # =========================
-        self.declare_parameter('range_filter_alpha', 0.1)
-        self.declare_parameter('left_range_filter_alpha', 0.3)  # faster filter for left sensor
+        self.declare_parameter('range_filter_alpha', 0.35)   # tuned for ~4.5 Hz accuracy-mode TOF
+        self.declare_parameter('left_range_filter_alpha', 0.75)  # faster filter for left sensor
         self.declare_parameter('print_distances_every_frame', False)
 
         # =========================
@@ -108,7 +108,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         self.declare_parameter('left_box_detect_distance', 0.54)
         self.declare_parameter('right_box_detect_distance', 0.45)
-        self.declare_parameter('box_detect_frames', 3)
+        self.declare_parameter('box_detect_frames', 2)  # reduced for ~4.5 Hz TOF update rate
 
         # ignore box search at first line-follow start
         self.declare_parameter('startup_box_ignore_distance', 0.25)
@@ -118,7 +118,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         # front obstacle / wall stop
         self.declare_parameter('front_obstacle_stop_distance', 0.20)
-        self.declare_parameter('front_obstacle_stop_frames', 3)
+        self.declare_parameter('front_obstacle_stop_frames', 2)  # reduced for ~4.5 Hz TOF update rate
 
         # =========================
         # Box visit maneuver
