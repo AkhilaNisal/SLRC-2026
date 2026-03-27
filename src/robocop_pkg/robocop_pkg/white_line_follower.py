@@ -7,7 +7,8 @@ from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
 
 import cv2
-import numpy as np
+
+from robocop_pkg.line_detection_utils import build_white_mask, line_centroid, steering_command
 
 
 class WhiteLineFollower(Node):
@@ -37,6 +38,9 @@ class WhiteLineFollower(Node):
         self.declare_parameter('search_linear', 0.05)
         self.declare_parameter('search_angular', 0.35)
 
+        # Debug visualization (disable on headless robot)
+        self.declare_parameter('debug', False)
+
         # Read params
         self.image_topic = self.get_parameter('image_topic').value
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
@@ -56,6 +60,7 @@ class WhiteLineFollower(Node):
 
         self.search_linear = float(self.get_parameter('search_linear').value)
         self.search_angular = float(self.get_parameter('search_angular').value)
+        self.debug = bool(self.get_parameter('debug').value)
 
         # ROS interfaces
         self.bridge = CvBridge()
@@ -66,16 +71,15 @@ class WhiteLineFollower(Node):
         self.frame_count = 0
         self.last_log_time = self.get_clock().now()
 
-        cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
+        if self.debug:
+            cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
+            self.get_logger().info("Press 'q' in the OpenCV window to quit.")
+        else:
+            self.get_logger().info("Debug windows disabled (headless mode). Set debug:=true to enable.")
 
-        self.get_logger().info(f"✅ Subscribing to: {self.image_topic}")
-        self.get_logger().info(f"✅ Publishing cmd_vel: {self.cmd_vel_topic}")
-        self.get_logger().info("Press 'q' in the OpenCV window to quit.")
-
-    @staticmethod
-    def clamp(x: float, lo: float, hi: float) -> float:
-        return max(lo, min(hi, x))
+        self.get_logger().info(f"Subscribing to: {self.image_topic}")
+        self.get_logger().info(f"Publishing cmd_vel: {self.cmd_vel_topic}")
 
     def image_cb(self, msg: Image):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -84,79 +88,59 @@ class WhiteLineFollower(Node):
         y0 = int(h * self.roi_y_start)
         roi = frame[y0:h, 0:w]
 
-        # White detection in HSV
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        lower = np.array([self.h_low, self.s_low, self.v_low])
-        upper = np.array([self.h_high, self.s_high, self.v_high])
-        mask = cv2.inRange(hsv, lower, upper)
-
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-
-        M = cv2.moments(mask)
-        area = M["m00"]
+        mask = build_white_mask(roi, self.h_low, self.s_low, self.v_low,
+                                self.h_high, self.s_high, self.v_high)
+        cx, area = line_centroid(mask, self.min_area)
+        lin, ang = steering_command(cx, w, self.kp, self.max_angular,
+                                    self.linear_speed, self.search_linear, self.search_angular)
 
         twist = Twist()
-        cx = None
-        detected = False
-
-        if area > self.min_area:
-            cx = int(M["m10"] / area)  # centroid x in ROI
-            error = float(cx - (w // 2))  # +ve => line is to right
-
-            # P-controller steering
-            ang = -self.kp * error
-            ang = self.clamp(ang, -self.max_angular, self.max_angular)
-
-            twist.linear.x = self.linear_speed
-            twist.angular.z = ang
-            detected = True
-        else:
-            # Line lost: slow + search turn
-            twist.linear.x = self.search_linear
-            twist.angular.z = self.search_angular
+        twist.linear.x = lin
+        twist.angular.z = ang
+        detected = cx is not None
 
         self.cmd_pub.publish(twist)
 
         # ---------- Debug visualization ----------
-        vis = frame.copy()
-        cv2.rectangle(vis, (0, y0), (w - 1, h - 1), (0, 255, 0), 2)
+        if self.debug:
+            vis = frame.copy()
+            cv2.rectangle(vis, (0, y0), (w - 1, h - 1), (0, 255, 0), 2)
 
-        if cx is not None:
-            cv2.circle(vis, (cx, y0 + (h - y0) // 2), 8, (0, 0, 255), -1)
+            if cx is not None:
+                cv2.circle(vis, (cx, y0 + (h - y0) // 2), 8, (0, 0, 255), -1)
 
-        if detected:
-            cv2.putText(
-                vis,
-                f"LINE area={int(area)} cx={cx} cmd: v={twist.linear.x:.2f} w={twist.angular.z:.2f}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2
-            )
-        else:
-            cv2.putText(
-                vis,
-                f"NO LINE area={int(area)} searching... cmd: v={twist.linear.x:.2f} w={twist.angular.z:.2f}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 0, 255),
-                2
-            )
+            if detected:
+                cv2.putText(
+                    vis,
+                    f"LINE area={int(area)} cx={cx} cmd: v={twist.linear.x:.2f} w={twist.angular.z:.2f}",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2
+                )
+            else:
+                cv2.putText(
+                    vis,
+                    f"NO LINE area={int(area)} searching... cmd: v={twist.linear.x:.2f} w={twist.angular.z:.2f}",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 255),
+                    2
+                )
 
-        cv2.imshow("camera", vis)
-        cv2.imshow("mask", mask)
+            cv2.imshow("camera", vis)
+            cv2.imshow("mask", mask)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            self.get_logger().info("Quit requested (q pressed). Stopping robot.")
-            stop = Twist()
-            self.cmd_pub.publish(stop)
-            rclpy.shutdown()
-            cv2.destroyAllWindows()
-            return
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                self.get_logger().info("Quit requested (q pressed). Stopping robot.")
+                stop = Twist()
+                self.cmd_pub.publish(stop)
+                rclpy.shutdown()
+                cv2.destroyAllWindows()
+                return
 
         # Log once per ~1 second
         self.frame_count += 1

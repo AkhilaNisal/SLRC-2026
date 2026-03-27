@@ -40,7 +40,7 @@ class TripleToFNode(Node):
         self.front_sensor = self._init_sensor(self.front_xshut, 0x31, "front")
         self.right_sensor = self._init_sensor(self.right_xshut, 0x32, "right")
 
-        self.timer = self.create_timer(0.05, self.publish_ranges)  # 20 Hz
+        self.timer = self.create_timer(0.22, self.publish_ranges)  # ~4.5 Hz (accuracy mode: 200 ms budget)
 
         self.get_logger().info("Triple ToF node started successfully.")
 
@@ -52,7 +52,8 @@ class TripleToFNode(Node):
         sensor.set_address(new_address)
         # sensor.measurement_timing_budget = 50000
         self.get_logger().info(
-            f"{name.capitalize()} sensor initialized at I2C address 0x{new_address:02X}"
+            f"{name.capitalize()} sensor initialized at I2C address 0x{new_address:02X} "
+            f"(accuracy mode, timing budget 200 ms)"
         )
         return sensor
 

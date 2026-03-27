@@ -12,6 +12,8 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
+from robocop_pkg.line_detection_utils import build_white_mask
+
 
 class WhiteLineFollowerWithBoxVisit(Node):
     def __init__(self):
@@ -103,6 +105,9 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         self.declare_parameter('box_return_speed', 0.12)
 
+        # Debug visualization (disable on headless robot)
+        self.declare_parameter('debug', False)
+
         # =========================
         # Read params
         # =========================
@@ -174,6 +179,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.box_wait_time = float(self.get_parameter('box_wait_time').value)
 
         self.box_return_speed = float(self.get_parameter('box_return_speed').value)
+        self.debug = bool(self.get_parameter('debug').value)
 
         # =========================
         # ROS interfaces
@@ -243,10 +249,14 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.frame_count = 0
         self.last_log_time = self.get_clock().now()
 
-        cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("bottom_mask", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("red_mask", cv2.WINDOW_NORMAL)
+        if self.debug:
+            cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("bottom_mask", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("red_mask", cv2.WINDOW_NORMAL)
+            self.get_logger().info("Debug windows enabled. Press 'q' to quit.")
+        else:
+            self.get_logger().info("Debug windows disabled (headless mode). Set debug:=true to enable.")
 
         # initial startup sequence: same reusable line-cross logic
         self.configure_line_cross_sequence(
@@ -299,15 +309,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         raw = float(msg.range)
         self.right_range_raw = raw
         self.right_range = self.low_pass_filter(self.right_range, raw, self.range_filter_alpha)
-
-    def build_white_mask(self, bgr_img):
-        hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
-        lower = np.array([self.h_low, self.s_low, self.v_low], dtype=np.uint8)
-        upper = np.array([self.h_high, self.s_high, self.v_high], dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        return mask
 
     def build_red_mask(self, bgr_img):
         hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
@@ -492,7 +493,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         y0 = int(h * self.roi_y_start)
         roi = frame[y0:h, 0:w]
-        mask = self.build_white_mask(roi)
+        mask = build_white_mask(roi, self.h_low, self.s_low, self.v_low, self.h_high, self.s_high, self.v_high)
 
         M = cv2.moments(mask)
         area = M["m00"]
@@ -500,7 +501,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         bh = int(h * self.bottom_strip_height_ratio)
         by0 = max(0, h - bh)
         bottom_roi = frame[by0:h, 0:w]
-        bottom_mask = self.build_white_mask(bottom_roi)
+        bottom_mask = build_white_mask(bottom_roi, self.h_low, self.s_low, self.v_low, self.h_high, self.s_high, self.v_high)
         Mb = cv2.moments(bottom_mask)
         bottom_area = Mb["m00"]
 
@@ -714,18 +715,19 @@ class WhiteLineFollowerWithBoxVisit(Node):
             2
         )
 
-        cv2.imshow("camera", vis)
-        cv2.imshow("mask", mask)
-        cv2.imshow("bottom_mask", bottom_mask)
-        cv2.imshow("red_mask", red_mask)
+        if self.debug:
+            cv2.imshow("camera", vis)
+            cv2.imshow("mask", mask)
+            cv2.imshow("bottom_mask", bottom_mask)
+            cv2.imshow("red_mask", red_mask)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            self.get_logger().info("Quit requested. Stopping robot.")
-            self.stop_robot()
-            rclpy.shutdown()
-            cv2.destroyAllWindows()
-            return
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                self.get_logger().info("Quit requested. Stopping robot.")
+                self.stop_robot()
+                rclpy.shutdown()
+                cv2.destroyAllWindows()
+                return
 
         self.frame_count += 1
         now = self.get_clock().now()
