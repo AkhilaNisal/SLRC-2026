@@ -11,6 +11,86 @@ info()    { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+# ── Step 0: Install ROS 2 Jazzy ───────────────────────────────────────────────
+info "=== Step 0: Installing ROS 2 Jazzy ==="
+
+# Locale
+sudo apt-get install -y locales
+sudo locale-gen en_US en_US.UTF-8
+sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+export LANG=en_US.UTF-8
+
+# Universe repo
+sudo apt-get install -y software-properties-common
+sudo add-apt-repository -y universe
+
+# ROS 2 apt repository
+sudo apt-get update -y
+sudo apt-get install -y curl gnupg lsb-release
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+    -o /usr/share/keyrings/ros-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+    http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+    | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+sudo apt-get update -y
+sudo apt-get upgrade -y
+
+# Install ROS 2 Jazzy Desktop (full)
+sudo apt-get install -y ros-jazzy-desktop
+
+# Dev tools
+sudo apt-get install -y \
+    python3-rosdep \
+    python3-colcon-common-extensions \
+    python3-vcstool \
+    ros-dev-tools
+
+# Initialise rosdep (skip if already done)
+sudo rosdep init 2>/dev/null || warn "rosdep already initialised – skipping"
+rosdep update
+
+# Source Jazzy for the rest of this script
+# shellcheck disable=SC1091
+source /opt/ros/jazzy/setup.bash
+
+info "ROS 2 Jazzy installed and sourced."
+
+# ── Step 1: XFCE Desktop ─────────────────────────────────────────────────────
+info "=== Step 1: Installing XFCE desktop ==="
+sudo apt-get install -y \
+    xfce4 \
+    xfce4-goodies \
+    xfce4-terminal \
+    thunar \
+    mousepad \
+    xfce4-taskmanager \
+    xfce4-screenshooter \
+    xfce4-notifyd \
+    dbus-x11
+
+# ── Step 2: RDP (xrdp) ───────────────────────────────────────────────────────
+info "=== Step 2: Installing xrdp (RDP server) ==="
+sudo apt-get install -y xrdp xorgxrdp
+
+# Configure xrdp to start an XFCE session
+sudo bash -c 'cat > /etc/xrdp/startwm.sh << "EOF"
+#!/bin/sh
+unset DBUS_SESSION_BUS_ADDRESS
+unset XDG_RUNTIME_DIR
+exec startxfce4
+EOF'
+sudo chmod +x /etc/xrdp/startwm.sh
+
+# Allow xrdp user to access ssl-cert
+sudo adduser xrdp ssl-cert 2>/dev/null || true
+
+# Enable and start xrdp service
+sudo systemctl enable xrdp
+sudo systemctl restart xrdp
+
+info "xrdp is running on port 3389."
+
 # ── Detect ROS 2 distro ───────────────────────────────────────────────────────
 if [ -n "$ROS_DISTRO" ]; then
     ROS_DISTRO_NAME="$ROS_DISTRO"
@@ -36,11 +116,11 @@ pip_install() {
         || pip3 install "$@"
 }
 
-# ── 1. System dependencies (apt) ─────────────────────────────────────────────
-info "=== Step 1/4: Updating apt package lists ==="
+# ── Step 3: System dependencies (apt) ────────────────────────────────────────
+info "=== Step 3/6: Updating apt package lists ==="
 sudo apt-get update -y
 
-info "=== Step 2/4: Installing system apt packages ==="
+info "=== Step 4/6: Installing system apt packages ==="
 apt_install \
     python3-pip \
     python3-opencv \
@@ -52,10 +132,20 @@ apt_install \
     python3-pytest \
     i2c-tools
 
-# ── 2. ROS 2 packages (apt) ───────────────────────────────────────────────────
+# GPIO libraries (lgpio + RPi.GPIO fallback)
+info "=== GPIO libraries ==="
+apt_install \
+    lgpio \
+    python3-lgpio 2>/dev/null \
+    || warn "lgpio apt package not available – will install via pip"
+pip_install \
+    lgpio \
+    RPi.GPIO
+
+# ── Step 5: ROS 2 packages (apt) ──────────────────────────────────────────────
 ROS="ros-${ROS_DISTRO_NAME}"
 
-info "=== Step 3/4: Installing ROS 2 packages ==="
+info "=== Step 5/6: Installing ROS 2 packages ==="
 
 # Core ROS 2 Python client
 apt_install \
@@ -124,8 +214,8 @@ apt_install \
     "${ROS}-webots-ros2-driver" 2>/dev/null \
     || warn "webots-ros2-driver not available for $ROS_DISTRO_NAME – you may need to install Webots manually."
 
-# ── 3. Python (pip) packages ──────────────────────────────────────────────────
-info "=== Step 4/4: Installing Python pip packages ==="
+# ── Step 6: Python (pip) packages ─────────────────────────────────────────────
+info "=== Step 6/6: Installing Python pip packages ==="
 
 # Computer vision
 pip_install \
