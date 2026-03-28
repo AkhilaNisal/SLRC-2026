@@ -3,7 +3,9 @@
 # starting pos in arena :translation 0.75 -1.05 0
 
 import math
+from collections import deque
 
+import gpiod
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -65,7 +67,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         # White detection
         # =========================
-        self.declare_parameter('roi_y_start', 0.60)
+        self.declare_parameter('roi_y_start', 0.70)
         self.declare_parameter('min_area', 5000)
 
         self.declare_parameter('bottom_strip_height_ratio', 0.14)
@@ -98,17 +100,28 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         # =========================
         # Distance sensing / filter
+        # Normal-mode VL53L0X runs at ~20 Hz (no measurement_timing_budget set).
+        # Alpha values here are tuned for that rate — lower than accuracy-mode values
+        # to achieve equivalent per-second smoothing with more frames available.
         # =========================
-        self.declare_parameter('range_filter_alpha', 0.35)   # tuned for ~4.5 Hz accuracy-mode TOF
-        self.declare_parameter('left_range_filter_alpha', 0.75)  # faster filter for left sensor
+        self.declare_parameter('range_filter_alpha', 0.15)          # EMA for right/front (20 Hz)
+        self.declare_parameter('left_range_filter_alpha', 0.25)     # slightly faster for left
         self.declare_parameter('print_distances_every_frame', False)
 
         # =========================
-        # Box detection while following line
+        # Delta-based ToF box detection while following line
+        #
+        # Instead of comparing against a fixed absolute distance, a rolling-median
+        # baseline is maintained per side.  When the filtered reading drops by more
+        # than tof_delta_threshold below that baseline the box confirm counter
+        # increments; reaching tof_confirm_frames consecutive hits triggers detection.
+        #
+        # This is robust to different arena layouts (no need to hard-code wall
+        # distance) and rejects single-frame spikes because the baseline is a median.
         # =========================
-        self.declare_parameter('left_box_detect_distance', 0.54)
-        self.declare_parameter('right_box_detect_distance', 0.45)
-        self.declare_parameter('box_detect_frames', 2)  # reduced for ~4.5 Hz TOF update rate
+        self.declare_parameter('tof_delta_threshold', 0.05)   # 5 cm drop from baseline → box
+        self.declare_parameter('tof_baseline_window', 20)     # frames kept for rolling median
+        self.declare_parameter('tof_confirm_frames', 5)       # consecutive delta-hits to confirm
 
         # ignore box search at first line-follow start
         self.declare_parameter('startup_box_ignore_distance', 0.25)
@@ -116,9 +129,19 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # ignore same box after handling
         self.declare_parameter('same_box_ignore_distance', 0.35)
 
-        # front obstacle / wall stop
+        # front obstacle / wall stop — ~0.25 s at 20 Hz
         self.declare_parameter('front_obstacle_stop_distance', 0.20)
-        self.declare_parameter('front_obstacle_stop_frames', 2)  # reduced for ~4.5 Hz TOF update rate
+        self.declare_parameter('front_obstacle_stop_frames', 5)
+
+        # =========================
+        # Red LED blink on box detection
+        # Uses gpiod (same library as stepper motor driver).
+        # blink_half_period_sec is the ON or OFF duration of each half-cycle.
+        # Two full blinks = 4 transitions (ON→OFF→ON→OFF) over 4×period seconds.
+        # =========================
+        self.declare_parameter('led_chip_name', 'gpiochip4')
+        self.declare_parameter('led_pin', 26)
+        self.declare_parameter('blink_half_period_sec', 0.3)
 
         # =========================
         # Box visit maneuver
@@ -217,9 +240,13 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.left_range_filter_alpha = float(self.get_parameter('left_range_filter_alpha').value)
         self.print_distances_every_frame = bool(self.get_parameter('print_distances_every_frame').value)
 
-        self.left_box_detect_distance = float(self.get_parameter('left_box_detect_distance').value)
-        self.right_box_detect_distance = float(self.get_parameter('right_box_detect_distance').value)
-        self.box_detect_frames = int(self.get_parameter('box_detect_frames').value)
+        self.tof_delta_threshold = float(self.get_parameter('tof_delta_threshold').value)
+        self.tof_baseline_window = int(self.get_parameter('tof_baseline_window').value)
+        self.tof_confirm_frames = int(self.get_parameter('tof_confirm_frames').value)
+
+        self.led_chip_name = str(self.get_parameter('led_chip_name').value)
+        self.led_pin = int(self.get_parameter('led_pin').value)
+        self.blink_half_period_sec = float(self.get_parameter('blink_half_period_sec').value)
 
         self.startup_box_ignore_distance = float(self.get_parameter('startup_box_ignore_distance').value)
         self.startup_box_ignore_time = (
@@ -305,6 +332,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.STATE_BOX_PICK_FAILED = 'BOX_PICK_FAILED'
         self.STATE_BOX_REVERSE_AFTER_PICK = 'BOX_REVERSE_AFTER_PICK'
         self.STATE_BOX_TURN_TO_RESUME = 'BOX_TURN_TO_RESUME'
+        # Temporary state: robot is stopped while LED blinks twice to signal detection.
+        self.STATE_BOX_BLINK = 'BOX_BLINK'
         self.STATE_TASK2_DONE = 'TASK2_DONE'
 
         self.state = self.STATE_LINE_CROSS_APPROACH
@@ -370,10 +399,23 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.front_range = math.inf
 
         self.measurement_started = False
+
+        # Delta-based box detection counters (consecutive confirm frames per side)
         self.left_detect_counter = 0
         self.right_detect_counter = 0
-        self.left_miss_sub_counter = 0
-        self.right_miss_sub_counter = 0
+
+        # Rolling-median baseline buffers — one per side (see _compute_delta)
+        self.left_baseline_buf: deque = deque(maxlen=self.tof_baseline_window)
+        self.right_baseline_buf: deque = deque(maxlen=self.tof_baseline_window)
+
+        # LED blink state
+        self._led_line = None          # gpiod line handle, set by _init_led
+        self._blink_count = 0          # how many half-periods have elapsed
+        self._blink_timer = None       # ROS timer object, created per blink sequence
+        self._blink_detected_side = None
+
+        self._init_led()
+
         self.finish_wall_counter = 0
         self.task2_done = False
         self.task2_done_published = False
@@ -395,8 +437,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
         )
 
         self.get_logger().info(
-            "Started task2_with_arm with first-start box ignore, separate left/right TOF detect, "
-            "same-box ignore and front obstacle stop."
+            "Started task2_with_arm: delta-ToF box detection (5 cm drop from rolling median), "
+            "red LED blink×2 on detection, normal-mode ToF filter settings."
         )
 
     @staticmethod
@@ -552,8 +594,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
     def reset_box_detection_counters(self):
         self.left_detect_counter = 0
         self.right_detect_counter = 0
-        self.left_miss_sub_counter = 0
-        self.right_miss_sub_counter = 0
 
     def same_side_is_ignored(self, side: str) -> bool:
         if self.ignore_box_side != side:
@@ -588,104 +628,217 @@ class WhiteLineFollowerWithBoxVisit(Node):
         return self.front_obstacle_counter >= self.front_obstacle_stop_frames
 
     # =========================
-    # IMPROVED DETECTION ALGORITHM
-    # Uses both raw and filtered readings for faster response.
-    # Counter increments by 2 when raw confirms, by 1 when only filtered confirms.
-    # Counter decays slowly (every 2 misses) to survive noisy frames.
+    # DELTA-BASED BOX DETECTION
+    #
+    # Each ToF reading is compared against a rolling median of recent background
+    # readings (left_baseline_buf / right_baseline_buf).  A drop of at least
+    # tof_delta_threshold (default 5 cm) from the median triggers one confirm
+    # frame; tof_confirm_frames consecutive frames are required for a detection.
+    #
+    # Why median baseline instead of absolute threshold:
+    #   - Works at any arena size / robot-to-wall distance without re-tuning.
+    #   - Single-frame noise spikes don't move the median.
+    #   - Baseline self-updates when no box is present, so drift is handled.
+    #
+    # Baseline update rule: a new reading is only added to the buffer when it
+    # is NOT a detection frame.  This stops the box's reflection from gradually
+    # pulling the baseline down and masking itself.
     # =========================
+    def _compute_delta(self, reading: float, buf: deque) -> bool:
+        """
+        Returns True (box present) when `reading` is >= tof_delta_threshold
+        below the rolling-median baseline.  Updates the baseline only on
+        non-detection frames so the box cannot corrupt its own baseline.
+        """
+        if not self.valid_range(reading):
+            return False
+
+        if len(buf) < 3:
+            # Not enough history yet — prime the buffer and withhold judgement.
+            buf.append(reading)
+            return False
+
+        baseline = float(np.median(list(buf)))
+        drop = baseline - reading  # positive when robot passes a closer object
+
+        if drop >= self.tof_delta_threshold:
+            # Box detected — do NOT add this reading to baseline
+            return True
+
+        # Background reading — update baseline
+        buf.append(reading)
+        return False
+
     def choose_box_side(self):
+        """
+        Called every image frame while in STATE_FOLLOW_LINE.
+        Returns 'LEFT', 'RIGHT', or None.
+        """
         if not self.measurement_started or self.state != self.STATE_FOLLOW_LINE:
             self.reset_box_detection_counters()
             return None
 
+        left_ignored = self.same_side_is_ignored('LEFT')
+        right_ignored = self.same_side_is_ignored('RIGHT')
+
         if self.startup_ignore_active_now():
+            # Still prime baselines during startup ignore, but don't trigger.
+            self._compute_delta(self.left_range, self.left_baseline_buf)
+            self._compute_delta(self.right_range, self.right_baseline_buf)
             self.reset_box_detection_counters()
             return None
 
-        # --- Left side detection (use both raw and filtered) ---
-        left_ignored = self.same_side_is_ignored('LEFT')
-        left_filtered_hit = (
-            self.valid_range(self.left_range)
-            and self.left_range < self.left_box_detect_distance
-            and not left_ignored
-        )
-        left_raw_hit = (
-            self.valid_range(self.left_range_raw)
-            and self.left_range_raw < self.left_box_detect_distance
-            and not left_ignored
-        )
-
-        # --- Right side detection (use both raw and filtered) ---
-        right_ignored = self.same_side_is_ignored('RIGHT')
-        right_filtered_hit = (
-            self.valid_range(self.right_range)
-            and self.right_range < self.right_box_detect_distance
-            and not right_ignored
-        )
-        right_raw_hit = (
-            self.valid_range(self.right_range_raw)
-            and self.right_range_raw < self.right_box_detect_distance
-            and not right_ignored
-        )
-
-        # --- Update left counter ---
-        if left_filtered_hit or left_raw_hit:
-            # Both raw and filtered confirm -> increment faster
-            if left_filtered_hit and left_raw_hit:
-                self.left_detect_counter += 2
-            else:
-                self.left_detect_counter += 1
-            self.left_miss_sub_counter = 0
+        # --- Left side ---
+        if left_ignored:
+            # Freely update baseline while ignored so it is fresh when ignore ends.
+            if self.valid_range(self.left_range):
+                self.left_baseline_buf.append(self.left_range)
+            self.left_detect_counter = 0
+            left_delta = False
         else:
-            # Slow decay: only decrement every 2 consecutive misses
-            self.left_miss_sub_counter += 1
-            if self.left_miss_sub_counter >= 2:
-                self.left_detect_counter = max(0, self.left_detect_counter - 1)
-                self.left_miss_sub_counter = 0
+            left_delta = self._compute_delta(self.left_range, self.left_baseline_buf)
 
-        # --- Update right counter ---
-        if right_filtered_hit or right_raw_hit:
-            if right_filtered_hit and right_raw_hit:
-                self.right_detect_counter += 2
-            else:
-                self.right_detect_counter += 1
-            self.right_miss_sub_counter = 0
+        # --- Right side ---
+        if right_ignored:
+            if self.valid_range(self.right_range):
+                self.right_baseline_buf.append(self.right_range)
+            self.right_detect_counter = 0
+            right_delta = False
         else:
-            self.right_miss_sub_counter += 1
-            if self.right_miss_sub_counter >= 2:
-                self.right_detect_counter = max(0, self.right_detect_counter - 1)
-                self.right_miss_sub_counter = 0
+            right_delta = self._compute_delta(self.right_range, self.right_baseline_buf)
 
-        left_ready = self.left_detect_counter >= self.box_detect_frames
-        right_ready = self.right_detect_counter >= self.box_detect_frames
+        # --- Update confirm counters (fast reset on miss, no slow-decay needed at 20 Hz) ---
+        if left_delta:
+            self.left_detect_counter += 1
+        else:
+            self.left_detect_counter = 0
 
-        # Debug logging when counters are building up
+        if right_delta:
+            self.right_detect_counter += 1
+        else:
+            self.right_detect_counter = 0
+
+        left_ready = self.left_detect_counter >= self.tof_confirm_frames
+        right_ready = self.right_detect_counter >= self.tof_confirm_frames
+
         if self.left_detect_counter > 0 or self.right_detect_counter > 0:
+            left_base = (
+                float(np.median(list(self.left_baseline_buf)))
+                if len(self.left_baseline_buf) >= 3 else float('nan')
+            )
+            right_base = (
+                float(np.median(list(self.right_baseline_buf)))
+                if len(self.right_baseline_buf) >= 3 else float('nan')
+            )
             self.get_logger().debug(
-                f"BoxDetect: L_cnt={self.left_detect_counter}/{self.box_detect_frames} "
-                f"R_cnt={self.right_detect_counter}/{self.box_detect_frames} "
-                f"L_filt={self.fmt_range(self.left_range)} L_raw={self.fmt_range(self.left_range_raw)} "
-                f"R_filt={self.fmt_range(self.right_range)} R_raw={self.fmt_range(self.right_range_raw)}"
+                f"BoxDetect: L_cnt={self.left_detect_counter}/{self.tof_confirm_frames} "
+                f"R_cnt={self.right_detect_counter}/{self.tof_confirm_frames} "
+                f"L_filt={self.fmt_range(self.left_range)} L_base={left_base:.3f} "
+                f"R_filt={self.fmt_range(self.right_range)} R_base={right_base:.3f}"
             )
 
         if not left_ready and not right_ready:
             return None
 
+        # Both ready → pick the side with the stronger (more frames) count
         if left_ready and right_ready:
-            left_val = self.left_range if self.valid_range(self.left_range) else math.inf
-            right_val = self.right_range if self.valid_range(self.right_range) else math.inf
-            side = 'LEFT' if left_val <= right_val else 'RIGHT'
+            side = 'LEFT' if self.left_detect_counter >= self.right_detect_counter else 'RIGHT'
         elif left_ready:
             side = 'LEFT'
         else:
             side = 'RIGHT'
 
         self.get_logger().info(
-            f"Box detected on {side}! L_cnt={self.left_detect_counter} R_cnt={self.right_detect_counter} "
-            f"L_range={self.fmt_range(self.left_range)} R_range={self.fmt_range(self.right_range)}"
+            f"Box detected on {side}! L_cnt={self.left_detect_counter} "
+            f"R_cnt={self.right_detect_counter} "
+            f"L_range={self.fmt_range(self.left_range)} "
+            f"R_range={self.fmt_range(self.right_range)}"
         )
         self.reset_box_detection_counters()
         return side
+
+    # =========================
+    # LED CONTROL
+    # =========================
+    def _init_led(self):
+        """Open the gpiod LED line.  Logs a warning and continues if it fails."""
+        try:
+            chip = gpiod.Chip(self.led_chip_name)
+            self._led_line = chip.get_line(self.led_pin)
+            self._led_line.request(
+                consumer='task2_led',
+                type=gpiod.LINE_REQ_DIR_OUT,
+                default_vals=[0]
+            )
+            self.get_logger().info(
+                f"Red LED initialized on {self.led_chip_name} pin {self.led_pin}"
+            )
+        except Exception as exc:
+            self._led_line = None
+            self.get_logger().warn(
+                f"LED init failed ({self.led_chip_name} pin {self.led_pin}): {exc}. "
+                "Box detection will log only — no physical blink."
+            )
+
+    def _set_led(self, on: bool):
+        """Set the LED on (True) or off (False)."""
+        if self._led_line is None:
+            return
+        try:
+            self._led_line.set_value(1 if on else 0)
+        except Exception as exc:
+            self.get_logger().warn(f"LED set_value error: {exc}")
+
+    def _start_blink(self, detected_side: str):
+        """
+        Stop the robot, record which side triggered, and start the 2×blink sequence.
+
+        The blink pattern is:  ON → OFF → ON → OFF
+        with blink_half_period_sec between each transition (default 0.3 s).
+        A ROS timer drives each half-period via _blink_step().
+        After the sequence the robot returns to STATE_FOLLOW_LINE.
+        """
+        # Cancel any leftover blink timer from a previous detection
+        if self._blink_timer is not None:
+            self._blink_timer.cancel()
+            self._blink_timer = None
+
+        self._blink_detected_side = detected_side
+        self._blink_count = 0
+        self.state = self.STATE_BOX_BLINK
+
+        self._set_led(True)  # first ON immediately
+        self._blink_timer = self.create_timer(
+            self.blink_half_period_sec, self._blink_step
+        )
+        self.get_logger().info(
+            f"Box detected on {detected_side} side — stopped, blinking red LED ×2."
+        )
+
+    def _blink_step(self):
+        """
+        Timer callback called every blink_half_period_sec.
+        Drives the ON→OFF→ON→OFF LED sequence and transitions back to line-follow.
+        """
+        self._blink_count += 1
+        # Transition table after the initial ON:
+        #   count 1 → OFF,  count 2 → ON,  count 3 → OFF (done)
+        led_on = (self._blink_count % 2 == 0)
+        self._set_led(led_on)
+
+        if self._blink_count >= 3:
+            # Sequence complete — ensure LED is off
+            self._set_led(False)
+            self._blink_timer.cancel()
+            self._blink_timer = None
+
+            # Ignore this side briefly so we don't immediately re-detect
+            if self._blink_detected_side is not None:
+                self.start_same_box_ignore(self._blink_detected_side)
+
+            self.reset_box_detection_counters()
+            self.state = self.STATE_FOLLOW_LINE
+            self.get_logger().info("Blink complete — resuming white-line following.")
     
     def configure_line_cross_sequence(self, speed: float, turn_direction: float, next_state: str):
         self.line_cross_speed = speed
@@ -1058,7 +1211,9 @@ class WhiteLineFollowerWithBoxVisit(Node):
         Mb = cv2.moments(bottom_mask)
         bottom_area = Mb["m00"]
 
-        red_found, red_cx, red_cy, red_area, red_bbox, red_mask = self.detect_red_box(frame)
+        # TODO: re-enable after turning is implemented
+        # red_found, red_cx, red_cy, red_area, red_bbox, red_mask = self.detect_red_box(frame)
+        red_found, red_cx, red_cy, red_area, red_bbox, red_mask = False, 0, 0, 0.0, None, None
 
         twist = Twist()
 
@@ -1113,9 +1268,18 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
                 side = self.choose_box_side()
                 if side is not None:
+                    # Stop the robot and blink red LED twice to signal detection.
+                    # _start_blink sets STATE_BOX_BLINK; after the blink sequence
+                    # the node returns here automatically via _blink_step().
                     twist.linear.x = 0.0
                     twist.angular.z = 0.0
-                    self.start_box_detour(side)
+                    self._start_blink(side)
+
+        elif self.state == self.STATE_BOX_BLINK:
+            # Robot stays stopped while the LED blink timer runs in the background.
+            # _blink_step() handles the state transition back to STATE_FOLLOW_LINE.
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
 
         elif self.state == self.STATE_BOX_FORWARD_BEFORE_TURN:
             # Drive forward along the white line for the configured distance
@@ -1157,20 +1321,22 @@ class WhiteLineFollowerWithBoxVisit(Node):
             front_dist = self.front_range
             near_by_range = self.valid_range(front_dist) and front_dist <= self.box_front_stop_distance
 
-            if red_found:
-                self.red_lost_counter = 0
-                error = float(red_cx - (w // 2))
-                ang = -self.red_kp * error
-                ang = self.clamp(ang, -self.red_max_angular, self.red_max_angular)
-                twist.linear.x = self.box_approach_speed
-                twist.angular.z = ang
-            else:
-                self.red_lost_counter += 1
-                twist.linear.x = 0.0
-                twist.angular.z = self.side_sign(self.active_box_side) * self.red_search_angular
-
-                if self.red_lost_counter > self.red_lost_frames_limit:
-                    self.get_logger().info("Red box lost. Rotating slowly to reacquire target.")
+            # TODO: re-enable red-box visual tracking after turning is implemented
+            # if red_found:
+            #     self.red_lost_counter = 0
+            #     error = float(red_cx - (w // 2))
+            #     ang = -self.red_kp * error
+            #     ang = self.clamp(ang, -self.red_max_angular, self.red_max_angular)
+            #     twist.linear.x = self.box_approach_speed
+            #     twist.angular.z = ang
+            # else:
+            #     self.red_lost_counter += 1
+            #     twist.linear.x = 0.0
+            #     twist.angular.z = self.side_sign(self.active_box_side) * self.red_search_angular
+            #     if self.red_lost_counter > self.red_lost_frames_limit:
+            #         self.get_logger().info("Red box lost. Rotating slowly to reacquire target.")
+            twist.linear.x = self.box_approach_speed
+            twist.angular.z = 0.0
 
             if near_by_range:
                 self.box_stop_counter += 1
@@ -1293,9 +1459,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 f"front_raw={self.fmt_range(self.front_range_raw)} front_f={self.fmt_range(self.front_range)} "
                 f"startup_ignore={startup_ignore} ignore_side={ignore_side} "
                 f"front_stop_counter={self.front_obstacle_counter}/{self.front_obstacle_stop_frames} "
-                f"L_det={self.left_detect_counter}/{self.box_detect_frames} "
-                f"R_det={self.right_detect_counter}/{self.box_detect_frames} "
-                f"red_found={red_found} red_area={int(red_area)} "
+                f"L_det={self.left_detect_counter}/{self.tof_confirm_frames} "
+                f"R_det={self.right_detect_counter}/{self.tof_confirm_frames} "
                 f"pick_in_progress={self.pick_in_progress} pick_feedback='{self.pick_feedback_text}' "
                 f"boxes_completed={self.boxes_completed} "
                 f"finish_counter={self.finish_wall_counter}/{self.task2_finish_wall_frames} "
@@ -1318,13 +1483,14 @@ class WhiteLineFollowerWithBoxVisit(Node):
             cv2.circle(vis, (cx_vis, cy_vis), 8, (0, 255, 255), -1)
             cv2.line(vis, (w // 2, y0), (w // 2, h - 1), (255, 255, 0), 2)
 
-        if red_found and red_bbox is not None:
-            x, y, bw, bh = red_bbox
-            cv2.rectangle(vis, (x, y), (x + bw, y + bh), (0, 0, 255), 2)
-            cv2.circle(vis, (red_cx, red_cy), 6, (0, 0, 255), -1)
-            cv2.line(vis, (w // 2, 0), (w // 2, h - 1), (0, 0, 255), 1)
-            cv2.putText(vis, f"red_area={int(red_area)}", (x, max(20, y - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        # TODO: re-enable red box visualization after turning is implemented
+        # if red_found and red_bbox is not None:
+        #     x, y, bw, bh = red_bbox
+        #     cv2.rectangle(vis, (x, y), (x + bw, y + bh), (0, 0, 255), 2)
+        #     cv2.circle(vis, (red_cx, red_cy), 6, (0, 0, 255), -1)
+        #     cv2.line(vis, (w // 2, 0), (w // 2, h - 1), (0, 0, 255), 1)
+        #     cv2.putText(vis, f"red_area={int(red_area)}", (x, max(20, y - 10)),
+        #                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         cv2.putText(vis, f"STATE: {self.state}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
@@ -1364,15 +1530,25 @@ class WhiteLineFollowerWithBoxVisit(Node):
             2
         )
 
+        # Show delta-detection state: baseline, current reading, confirm counter
+        l_base_txt = (
+            f"{float(np.median(list(self.left_baseline_buf))):.2f}"
+            if len(self.left_baseline_buf) >= 3 else "priming"
+        )
+        r_base_txt = (
+            f"{float(np.median(list(self.right_baseline_buf))):.2f}"
+            if len(self.right_baseline_buf) >= 3 else "priming"
+        )
         cv2.putText(
             vis,
-            f"Lbox<{self.left_box_detect_distance:.2f} Rbox<{self.right_box_detect_distance:.2f} "
-            f"Ldet={self.left_detect_counter}/{self.box_detect_frames} Rdet={self.right_detect_counter}/{self.box_detect_frames}",
+            f"Lbase={l_base_txt} Rbase={r_base_txt} dThresh={self.tof_delta_threshold:.2f} "
+            f"Ldet={self.left_detect_counter}/{self.tof_confirm_frames} "
+            f"Rdet={self.right_detect_counter}/{self.tof_confirm_frames}",
             (10, 185),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            0.5,
             (255, 210, 120),
-            2
+            1
         )
 
         cv2.putText(
@@ -1407,7 +1583,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         cv2.putText(
             vis,
-            f"active_box={self.active_box_side} red_found={red_found}",
+            f"active_box={self.active_box_side}",
             (10, 305),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
@@ -1455,7 +1631,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
             self.get_logger().info(
                 f"fps~{self.frame_count} state={self.state} "
                 f"yaw={yaw_txt} target={tgt_txt} "
-                f"main_area={int(area)} bottom_area={int(bottom_area)} red_area={int(red_area)} "
+                f"main_area={int(area)} bottom_area={int(bottom_area)} "
                 f"left={self.display_range(self.left_range)} "
                 f"right={self.display_range(self.right_range)} "
                 f"front={self.display_range(self.front_range)} "
