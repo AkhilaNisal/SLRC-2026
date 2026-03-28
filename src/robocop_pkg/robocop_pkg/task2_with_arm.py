@@ -1199,24 +1199,19 @@ class WhiteLineFollowerWithBoxVisit(Node):
         else:
             self.get_logger().warn(f"Pick action failed: {self.pick_result_message}")
 
-    def _draw_tof_sparkline(self, vis):
+    def _draw_tof_sparkline(self):
         """
-        Draw left (cyan) and right (yellow) ToF distance sparklines on the bottom
-        of the debug frame. Range 0–2 m maps to the plot height. A horizontal
-        dashed line shows the detection threshold drop from each baseline.
+        Draw left (cyan) and right (yellow) ToF distance sparklines in a
+        separate window. Range 0–2 m maps to the plot height. A horizontal
+        line shows the detection threshold drop from each baseline.
         """
         if not self.debug:
             return
-        h, w = vis.shape[:2]
-        plot_h = 60       # pixels tall
-        plot_w = min(w, 240)
-        x0 = w - plot_w - 5
-        y0 = h - plot_h - 5
-        max_m = 2.0       # clamp display range to 2 m
+        plot_h = 150
+        plot_w = 400
+        max_m = 2.0
 
-        # background
-        cv2.rectangle(vis, (x0, y0), (x0 + plot_w, y0 + plot_h), (30, 30, 30), -1)
-        cv2.rectangle(vis, (x0, y0), (x0 + plot_w, y0 + plot_h), (80, 80, 80), 1)
+        canvas = np.zeros((plot_h + 30, plot_w, 3), dtype=np.uint8)
 
         def draw_line(buf, color):
             pts = list(buf)
@@ -1226,14 +1221,14 @@ class WhiteLineFollowerWithBoxVisit(Node):
             for i in range(len(pts) - 1):
                 v1 = min(pts[i], max_m) / max_m
                 v2 = min(pts[i + 1], max_m) / max_m
-                px1 = int(x0 + i * step)
-                py1 = int(y0 + plot_h - v1 * plot_h)
-                px2 = int(x0 + (i + 1) * step)
-                py2 = int(y0 + plot_h - v2 * plot_h)
-                cv2.line(vis, (px1, py1), (px2, py2), color, 1)
+                px1 = int(i * step)
+                py1 = int(plot_h - v1 * plot_h)
+                px2 = int((i + 1) * step)
+                py2 = int(plot_h - v2 * plot_h)
+                cv2.line(canvas, (px1, py1), (px2, py2), color, 1)
 
-        draw_line(self.left_vis_buf, (255, 255, 0))   # cyan-ish = left
-        draw_line(self.right_vis_buf, (0, 255, 255))  # yellow-ish = right
+        draw_line(self.left_vis_buf, (255, 255, 0))
+        draw_line(self.right_vis_buf, (0, 255, 255))
 
         # threshold line for each side (baseline - delta_threshold)
         for buf, color in [(self.left_baseline_buf, (255, 255, 0)),
@@ -1241,13 +1236,13 @@ class WhiteLineFollowerWithBoxVisit(Node):
             if len(buf) >= 3:
                 thresh = float(np.median(list(buf))) - self.tof_delta_threshold
                 thresh = max(0.0, min(thresh, max_m))
-                ty = int(y0 + plot_h - (thresh / max_m) * plot_h)
-                cv2.line(vis, (x0, ty), (x0 + plot_w, ty), color, 1, cv2.LINE_4)
+                ty = int(plot_h - (thresh / max_m) * plot_h)
+                cv2.line(canvas, (0, ty), (plot_w, ty), color, 1)
 
-        cv2.putText(vis, "L ToF", (x0 + 2, y0 - 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
-        cv2.putText(vis, "R ToF", (x0 + 50, y0 - 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+        cv2.putText(canvas, f"L={self.fmt_range(self.left_range)}  R={self.fmt_range(self.right_range)}  thresh_drop={self.tof_delta_threshold:.2f}m",
+                    (5, plot_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+
+        cv2.imshow("ToF distances", canvas)
 
     def image_cb(self, msg: Image):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -1669,9 +1664,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
             2
         )
 
-        self._draw_tof_sparkline(vis)
-
         if self.debug:
+            self._draw_tof_sparkline()
             cv2.imshow("camera", vis)
 
             key = cv2.waitKey(1) & 0xFF
