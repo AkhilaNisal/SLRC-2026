@@ -282,12 +282,12 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         # Motion control
         # =========================
-        self.declare_parameter('forward_speed', 0.1)
-        self.declare_parameter('linear_speed', 0.1)
+        self.declare_parameter('forward_speed', 0.25)
+        self.declare_parameter('linear_speed', 0.15)
         self.declare_parameter('kp', 0.004)
         self.declare_parameter('max_angular', 1.2)
 
-        self.declare_parameter('extra_forward_distance', 0.28)
+        self.declare_parameter('extra_forward_distance', 0.19)
         self.declare_parameter('post_turn_wait_time', 1.0)
 
         self.declare_parameter('search_linear', 0.04)
@@ -336,24 +336,20 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('red_max_angular', 1.0)
         self.declare_parameter('red_search_angular', 0.35)
         self.declare_parameter('red_lost_frames_limit', 12)
-        self.declare_parameter('red_roi_top_trim_ratio', 0.18)
-        self.declare_parameter('red_roi_side_trim_ratio', 0.12)
-        self.declare_parameter('red_confirm_timeout_sec', 0.70)
-        self.declare_parameter('red_confirm_frames', 2)
 
         # =========================
         # Distance sensing / filter
         # =========================
         self.declare_parameter('range_filter_alpha', 0.1)
         self.declare_parameter('left_range_filter_alpha', 0.3)
-        self.declare_parameter('print_distances_every_frame', True)
+        self.declare_parameter('print_distances_every_frame', False)
 
         # =========================
         # Box detection while following line
         # =========================
         self.declare_parameter('left_box_detect_distance', 0.54)
         self.declare_parameter('right_box_detect_distance', 0.45)
-        self.declare_parameter('box_detect_frames', 6)
+        self.declare_parameter('box_detect_frames', 3)
 
         self.declare_parameter('startup_box_ignore_distance', 0.25)
         self.declare_parameter('same_box_ignore_distance', 0.35)
@@ -398,7 +394,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         # reverse after pick
         self.declare_parameter('reverse_after_pick_speed', 0.15)
-        self.declare_parameter('reverse_after_pick_distance', 0.50)
+        self.declare_parameter('reverse_after_pick_distance', 0.60)
 
         # =========================
         # Action client / pickup behavior
@@ -412,7 +408,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # Task 2 finish behavior
         # =========================
         self.declare_parameter('target_box_count', 6)
-        self.declare_parameter('task2_finish_wall_distance', 0.6)
+        self.declare_parameter('task2_finish_wall_distance', 0.4)
         self.declare_parameter('task2_finish_wall_frames', 1)
         self.declare_parameter('task2_finish_forward_speed', 0.08)
 
@@ -475,10 +471,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.red_max_angular = float(self.get_parameter('red_max_angular').value)
         self.red_search_angular = float(self.get_parameter('red_search_angular').value)
         self.red_lost_frames_limit = int(self.get_parameter('red_lost_frames_limit').value)
-        self.red_roi_top_trim_ratio = float(self.get_parameter('red_roi_top_trim_ratio').value)
-        self.red_roi_side_trim_ratio = float(self.get_parameter('red_roi_side_trim_ratio').value)
-        self.red_confirm_timeout_sec = float(self.get_parameter('red_confirm_timeout_sec').value)
-        self.red_confirm_frames = int(self.get_parameter('red_confirm_frames').value)
 
         self.range_filter_alpha = float(self.get_parameter('range_filter_alpha').value)
         self.left_range_filter_alpha = float(self.get_parameter('left_range_filter_alpha').value)
@@ -627,12 +619,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.box_forward_before_turn_start_time = None
         self.box_stop_reached_time = None
         self.pick_retry_due_time = None
-        self.box_turn_completed_time = None
-        self.box_red_confirmed = False
-        self.red_confirm_counter = 0
-        self.box_turn_completed_time = None
-        self.box_red_confirmed = False
-        self.red_confirm_counter = 0
 
         # ignore same-side box detection after one pickup
         self.ignore_box_side = None
@@ -704,7 +690,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.left_side_info = self.left_side_detector.last_info
         self.right_side_info = self.right_side_detector.last_info
         self.imshow_failed = False
-        self.last_red_roi = None
 
         # debug
         self.frame_count = 0
@@ -777,7 +762,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
     def right_range_cb(self, msg: Range):
         raw = float(msg.range)
         self.right_range_raw = raw
-        self.right_range = self.low_pass_filter(self.right_range, raw, self.left_range_filter_alpha)
+        self.right_range = self.low_pass_filter(self.right_range, raw, self.range_filter_alpha)
 
     def front_range_cb(self, msg: Range):
         raw = float(msg.range)
@@ -797,25 +782,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
         return mask
 
-    def get_red_search_roi(self, img_shape):
-        h, w = img_shape[:2]
-
-        y0 = int(h * self.red_roi_top_trim_ratio)
-        x_trim = int(w * self.red_roi_side_trim_ratio)
-
-        y0 = max(0, min(h - 1, y0))
-        x_trim = max(0, min(max(0, (w // 2) - 2), x_trim))
-
-        x0 = x_trim
-        x1 = w - x_trim
-        y1 = h
-
-        if x1 <= x0:
-            x0 = 0
-            x1 = w
-
-        return x0, y0, x1, y1
-
     def build_red_mask(self, bgr_img):
         hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
 
@@ -833,13 +799,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         mask = cv2.GaussianBlur(mask, (5, 5), 0)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-        x0, y0, x1, y1 = self.get_red_search_roi(bgr_img.shape)
-        self.last_red_roi = (x0, y0, x1, y1)
-
-        cropped_mask = np.zeros_like(mask)
-        cropped_mask[y0:y1, x0:x1] = mask[y0:y1, x0:x1]
-        return cropped_mask
+        return mask
 
     def detect_red_box(self, frame):
         mask = self.build_red_mask(frame)
@@ -1030,9 +990,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.box_forward_before_turn_start_time = None
         self.box_stop_reached_time = None
         self.pick_retry_due_time = None
-        self.box_turn_completed_time = None
-        self.box_red_confirmed = False
-        self.red_confirm_counter = 0
 
         self.pick_goal_sent = False
         self.pick_in_progress = False
@@ -1068,39 +1025,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 self.get_logger().info(
                     f"{side} box detected. count={count}. Starting gyro turn toward box."
                 )
-
-    def decrement_active_box_count(self):
-        if self.active_box_side == 'LEFT':
-            self.left_box_count = max(0, self.left_box_count - 1)
-        elif self.active_box_side == 'RIGHT':
-            self.right_box_count = max(0, self.right_box_count - 1)
-
-    def abort_false_box_and_resume(self, reason: str):
-        side = self.active_box_side
-        if side is None:
-            self.state = self.STATE_FOLLOW_LINE
-            return
-
-        self.decrement_active_box_count()
-        self.box_stop_counter = 0
-        self.box_drive_start_time = None
-        self.red_lost_counter = 0
-        self.reverse_start_time = None
-        self.box_stop_reached_time = None
-        self.pick_retry_due_time = None
-        self.box_turn_completed_time = None
-        self.box_red_confirmed = False
-        self.red_confirm_counter = 0
-
-        self.get_logger().warn(
-            f"Aborting {side} box detour: {reason}. Corrected false {side} box count and returning to line."
-        )
-
-        self.start_relative_turn(
-            self.opposite_side_sign(side) * self.turn_angle_90_deg,
-            self.STATE_BOX_TURN_TO_RESUME,
-            self.STATE_FOLLOW_LINE
-        )
 
     def stop_robot(self):
         self.cmd_pub.publish(Twist())
@@ -1182,12 +1106,9 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 if self.state == self.STATE_BOX_DRIVE_TO_BOX:
                     self.box_stop_counter = 0
                     self.box_drive_start_time = self.get_clock().now()
-                    self.box_turn_completed_time = self.get_clock().now()
                     self.red_lost_counter = 0
-                    self.box_red_confirmed = False
-                    self.red_confirm_counter = 0
                     self.get_logger().info(
-                        f"Turned toward {self.active_box_side} box. Waiting for centered red-box confirmation."
+                        f"Turned toward {self.active_box_side} box. Approaching with slow front-stop logic."
                     )
                 elif self.state == self.STATE_FOLLOW_LINE:
                     handled_side = self.active_box_side
@@ -1197,9 +1118,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
                     self.reverse_start_time = None
                     self.box_stop_reached_time = None
                     self.pick_retry_due_time = None
-                    self.box_turn_completed_time = None
-                    self.box_red_confirmed = False
-                    self.red_confirm_counter = 0
                     self.active_box_side = None
                     if handled_side is not None:
                         self.start_same_box_ignore(handled_side)
@@ -1227,10 +1145,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 self.state = self.turn_next_state
                 if self.state == self.STATE_BOX_DRIVE_TO_BOX:
                     self.box_drive_start_time = self.get_clock().now()
-                    self.box_turn_completed_time = self.get_clock().now()
                     self.red_lost_counter = 0
-                    self.box_red_confirmed = False
-                    self.red_confirm_counter = 0
                 elif self.state == self.STATE_FOLLOW_LINE:
                     handled_side = self.active_box_side
                     self.box_stop_counter = 0
@@ -1239,9 +1154,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
                     self.reverse_start_time = None
                     self.box_stop_reached_time = None
                     self.pick_retry_due_time = None
-                    self.box_turn_completed_time = None
-                    self.box_red_confirmed = False
-                    self.red_confirm_counter = 0
                     self.active_box_side = None
                     if handled_side is not None:
                         self.start_same_box_ignore(handled_side)
@@ -1430,6 +1342,67 @@ class WhiteLineFollowerWithBoxVisit(Node):
         else:
             self.get_logger().warn(f"Pick action failed: {self.pick_result_message}")
 
+    def draw_plot_series(self, canvas, values, x0, y0, w, h, y_min, y_max, color):
+        vals = list(values)
+        if len(vals) < 2 or y_max <= y_min:
+            return
+
+        prev_pt = None
+        n = len(vals)
+        for i, v in enumerate(vals):
+            if v is None or math.isnan(v) or math.isinf(v):
+                prev_pt = None
+                continue
+            x = x0 + int((i / max(1, n - 1)) * (w - 1))
+            y = y0 + h - 1 - int(((v - y_min) / max(1e-6, y_max - y_min)) * (h - 1))
+            pt = (x, y)
+            if prev_pt is not None:
+                cv2.line(canvas, prev_pt, pt, color, 2)
+            prev_pt = pt
+
+    def draw_single_side_panel(self, canvas, x0, y0, w, h, title, detector, info):
+        cv2.rectangle(canvas, (x0, y0), (x0 + w, y0 + h), (80, 80, 80), 1)
+        cv2.putText(canvas, title, (x0 + 10, y0 + 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+
+        hist_vals = []
+        for seq in (detector.raw_hist, detector.fast_hist, detector.baseline_hist):
+            hist_vals.extend([v for v in seq if v is not None and not math.isnan(v) and not math.isinf(v)])
+
+        if hist_vals:
+            y_min = min(hist_vals) - 0.01
+            y_max = max(hist_vals) + 0.01
+            plot_x = x0 + 10
+            plot_y = y0 + 35
+            plot_w = w - 20
+            plot_h = h - 70
+            cv2.rectangle(canvas, (plot_x, plot_y), (plot_x + plot_w, plot_y + plot_h), (60, 60, 60), 1)
+            self.draw_plot_series(canvas, detector.raw_hist, plot_x, plot_y, plot_w, plot_h, y_min, y_max, (180, 180, 180))
+            self.draw_plot_series(canvas, detector.fast_hist, plot_x, plot_y, plot_w, plot_h, y_min, y_max, (0, 255, 255))
+            self.draw_plot_series(canvas, detector.baseline_hist, plot_x, plot_y, plot_w, plot_h, y_min, y_max, (0, 255, 0))
+            cv2.putText(canvas, f"max={y_max:.3f}", (plot_x + 4, plot_y + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (140, 140, 140), 1)
+            cv2.putText(canvas, f"min={y_min:.3f}", (plot_x + 4, plot_y + plot_h - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (140, 140, 140), 1)
+
+        status_color = (0, 0, 255) if info.get('event', False) else ((0, 255, 255) if info.get('tracking', False) else (180, 180, 180))
+        cv2.putText(canvas,
+                    f"raw={info.get('raw', math.nan):.3f} fast={info.get('fast', math.nan):.3f} base={info.get('baseline', math.nan):.3f}",
+                    (x0 + 10, y0 + h - 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1)
+        cv2.putText(canvas,
+                    f"drop={info.get('excursion', 0.0):.3f} peak={info.get('peak_excursion', 0.0):.3f} area={info.get('excursion_area', 0.0):.3f} rec={info.get('recovery_count', 0)}",
+                    (x0 + 10, y0 + h - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, status_color, 1)
+
+    def build_side_variation_debug_view(self):
+        panel = np.zeros((420, 1000, 3), dtype=np.uint8)
+        cv2.putText(panel, 'Side distance variation debug: raw(gray) fast(yellow) baseline(green)',
+                    (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2)
+        self.draw_single_side_panel(panel, 15, 45, 970, 160, 'LEFT SIDE', self.left_side_detector, self.left_side_info)
+        self.draw_single_side_panel(panel, 15, 220, 970, 160, 'RIGHT SIDE', self.right_side_detector, self.right_side_info)
+        return panel
+
     def show_debug_windows_safe(self, vis, mask, bottom_mask, red_mask):
         if not self.show_debug_windows or self.imshow_failed:
             return
@@ -1437,7 +1410,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
             cv2.imshow('task2_main_debug', vis)
             cv2.imshow('task2_white_mask', mask)
             cv2.imshow('task2_bottom_white_mask', bottom_mask)
-            # cv2.imshow('task2_red_mask', red_mask)
+            cv2.imshow('task2_red_mask', red_mask)
+            cv2.imshow('task2_side_variation_debug', self.build_side_variation_debug_view())
             cv2.waitKey(1)
         except Exception as exc:
             self.imshow_failed = True
@@ -1558,75 +1532,52 @@ class WhiteLineFollowerWithBoxVisit(Node):
             side_dist = self.current_side_range()
             front_dist = self.front_range
 
-            if not self.box_red_confirmed:
+            speed_by_front = self.compute_box_approach_speed(front_dist)
+            stop_now = speed_by_front == 0.0
+
+            if red_found:
+                self.red_lost_counter = 0
+                error = float(red_cx - (w // 2))
+                ang = -self.red_kp * error
+                ang = self.clamp(ang, -self.red_max_angular, self.red_max_angular)
+
+                twist.linear.x = speed_by_front
+                twist.angular.z = ang if speed_by_front > 0.0 else 0.0
+            else:
+                self.red_lost_counter += 1
+                twist.linear.x = 0.0
+                twist.angular.z = self.side_sign(self.active_box_side) * self.red_search_angular
+
+                if self.red_lost_counter > self.red_lost_frames_limit:
+                    self.get_logger().info("Red box lost. Rotating slowly to reacquire target.")
+
+            if stop_now:
+                self.box_stop_counter += 1
+            else:
+                self.box_stop_counter = 0
+
+            if self.box_stop_counter >= self.box_stop_frames:
                 twist.linear.x = 0.0
                 twist.angular.z = 0.0
-
-                if red_found:
-                    self.red_confirm_counter += 1
-                else:
-                    self.red_confirm_counter = 0
-
-                if self.red_confirm_counter >= self.red_confirm_frames:
-                    self.box_red_confirmed = True
-                    self.red_lost_counter = 0
-                    self.get_logger().info(
-                        f"Red box confirmed in front for {self.active_box_side} side. Starting approach."
-                    )
-                elif self.box_turn_completed_time is not None:
-                    confirm_elapsed = (self.get_clock().now() - self.box_turn_completed_time).nanoseconds / 1e9
-                    if confirm_elapsed >= self.red_confirm_timeout_sec:
-                        self.abort_false_box_and_resume(
-                            f"no centered red box seen within {self.red_confirm_timeout_sec:.2f}s after turn"
-                        )
-
-            if self.state == self.STATE_BOX_DRIVE_TO_BOX and self.box_red_confirmed:
-                speed_by_front = self.compute_box_approach_speed(front_dist)
-                stop_now = speed_by_front == 0.0
-
-                if red_found:
-                    self.red_lost_counter = 0
-                    error = float(red_cx - (w // 2))
-                    ang = -self.red_kp * error
-                    ang = self.clamp(ang, -self.red_max_angular, self.red_max_angular)
-
-                    twist.linear.x = speed_by_front
-                    twist.angular.z = ang if speed_by_front > 0.0 else 0.0
-                else:
-                    self.red_lost_counter += 1
-                    twist.linear.x = 0.0
-                    twist.angular.z = self.side_sign(self.active_box_side) * self.red_search_angular
-
-                    if self.red_lost_counter > self.red_lost_frames_limit:
-                        self.get_logger().info("Confirmed red box lost. Rotating slowly to reacquire target.")
-
-                if stop_now:
-                    self.box_stop_counter += 1
-                else:
-                    self.box_stop_counter = 0
-
-                if self.box_stop_counter >= self.box_stop_frames:
+                self.state = self.STATE_BOX_STOP_SETTLE
+                self.box_stop_reached_time = self.get_clock().now()
+                self.get_logger().info(
+                    f"Reached {self.active_box_side} box using slow-stop logic. "
+                    f"front={self.fmt_range(front_dist)} side={self.fmt_range(side_dist)}. "
+                    f"Settling for {self.box_stop_settle_sec:.2f}s before pick."
+                )
+            elif self.box_drive_start_time is not None:
+                elapsed = (self.get_clock().now() - self.box_drive_start_time).nanoseconds / 1e9
+                if elapsed >= self.box_drive_timeout_sec:
                     twist.linear.x = 0.0
                     twist.angular.z = 0.0
                     self.state = self.STATE_BOX_STOP_SETTLE
                     self.box_stop_reached_time = self.get_clock().now()
-                    self.get_logger().info(
-                        f"Reached {self.active_box_side} box using slow-stop logic. "
-                        f"front={self.fmt_range(front_dist)} side={self.fmt_range(side_dist)}. "
-                        f"Settling for {self.box_stop_settle_sec:.2f}s before pick."
+                    self.get_logger().warn(
+                        f"Box drive timeout. Proceeding to settle then pick. "
+                        f"front={self.fmt_range(front_dist)} side={self.fmt_range(side_dist)} "
+                        f"active_box={self.active_box_side}"
                     )
-                elif self.box_drive_start_time is not None:
-                    elapsed = (self.get_clock().now() - self.box_drive_start_time).nanoseconds / 1e9
-                    if elapsed >= self.box_drive_timeout_sec:
-                        twist.linear.x = 0.0
-                        twist.angular.z = 0.0
-                        self.state = self.STATE_BOX_STOP_SETTLE
-                        self.box_stop_reached_time = self.get_clock().now()
-                        self.get_logger().warn(
-                            f"Box drive timeout. Proceeding to settle then pick. "
-                            f"front={self.fmt_range(front_dist)} side={self.fmt_range(side_dist)} "
-                            f"active_box={self.active_box_side}"
-                        )
 
         elif self.state == self.STATE_BOX_STOP_SETTLE:
             twist.linear.x = 0.0
@@ -1770,12 +1721,6 @@ class WhiteLineFollowerWithBoxVisit(Node):
             cv2.circle(vis, (cx_vis, cy_vis), 8, (0, 255, 255), -1)
             cv2.line(vis, (w // 2, y0), (w // 2, h - 1), (255, 255, 0), 2)
 
-        if self.last_red_roi is not None:
-            rx0, ry0, rx1, ry1 = self.last_red_roi
-            cv2.rectangle(vis, (rx0, ry0), (rx1 - 1, ry1 - 1), (0, 0, 180), 2)
-            cv2.putText(vis, "RED SEARCH ROI", (rx0 + 8, max(25, ry0 - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 180), 2)
-
         if red_found and red_bbox is not None:
             x, y, bw, bh = red_bbox
             cv2.rectangle(vis, (x, y), (x + bw, y + bh), (0, 0, 255), 2)
@@ -1875,7 +1820,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         cv2.putText(
             vis,
-            f"active_box={self.active_box_side} red_found={red_found} red_ok={self.box_red_confirmed}",
+            f"active_box={self.active_box_side} red_found={red_found}",
             (10, 335),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
@@ -1897,7 +1842,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         cv2.putText(
             vis,
-            f"Ltrack={self.left_side_info.get('tracking', False)} Rtrack={self.right_side_info.get('tracking', False)} red_confirm={self.red_confirm_counter}/{self.red_confirm_frames}",
+            f"Ltrack={self.left_side_info.get('tracking', False)} Rtrack={self.right_side_info.get('tracking', False)}",
             (10, 395),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
@@ -1934,7 +1879,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 f"Rdrop/peak=({self.right_side_info.get('excursion', 0.0):.3f},{self.right_side_info.get('peak_excursion', 0.0):.3f}) "
                 f"counts(L,R)=({self.left_box_count},{self.right_box_count}) "
                 f"boxes_completed={self.boxes_completed}/{self.target_box_count} "
-                f"active_box={self.active_box_side} red_ok={self.box_red_confirmed} "
+                f"active_box={self.active_box_side} "
                 f"pick_in_progress={self.pick_in_progress} "
                 f"pick_result_ready={self.pick_result_ready} "
                 f"pick_feedback='{self.pick_feedback_text}' "

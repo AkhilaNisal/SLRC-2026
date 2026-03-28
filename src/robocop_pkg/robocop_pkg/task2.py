@@ -15,7 +15,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-class WhiteLineFollowerWithSensorPlot(Node):
+class WhiteLineFollowerWithRightSensorPlot(Node):
     def __init__(self):
         super().__init__('task2')
 
@@ -54,7 +54,6 @@ class WhiteLineFollowerWithSensorPlot(Node):
         # Distance sensor / box counting
         # =========================
         self.declare_parameter('box_detect_distance', 0.5)
-        self.declare_parameter('box_release_distance', 0.15)
         self.declare_parameter('box_detect_frames', 10)
         self.declare_parameter('box_release_frames', 10)
         self.declare_parameter('print_distances_every_frame', False)
@@ -85,7 +84,6 @@ class WhiteLineFollowerWithSensorPlot(Node):
         self.v_high = int(self.get_parameter('v_high').value)
 
         self.box_detect_distance = float(self.get_parameter('box_detect_distance').value)
-        self.box_release_distance = float(self.get_parameter('box_release_distance').value)
         self.box_detect_frames = int(self.get_parameter('box_detect_frames').value)
         self.box_release_frames = int(self.get_parameter('box_release_frames').value)
         self.print_distances_every_frame = bool(
@@ -131,13 +129,13 @@ class WhiteLineFollowerWithSensorPlot(Node):
         self.right_release_counter = 0
 
         self.history_t = []
-        self.history_left = []
         self.history_right = []
         self.measurement_start_wall_time = None
 
         self.frame_count = 0
         self.last_log_time = self.get_clock().now()
 
+        # GUI windows
         cv2.namedWindow("camera", cv2.WINDOW_NORMAL)
         cv2.namedWindow("mask", cv2.WINDOW_NORMAL)
 
@@ -145,7 +143,7 @@ class WhiteLineFollowerWithSensorPlot(Node):
         self.get_logger().info(f"Publishing cmd_vel: {self.cmd_vel_topic}")
         self.get_logger().info(f"Left range topic: {self.left_range_topic}")
         self.get_logger().info(f"Right range topic: {self.right_range_topic}")
-        self.get_logger().info("Starting directly with white line follower + sensor data recording.")
+        self.get_logger().info("Starting directly with white line follower + RIGHT sensor plotting.")
 
         self.start_measurement()
 
@@ -200,10 +198,9 @@ class WhiteLineFollowerWithSensorPlot(Node):
         self.right_release_counter = 0
 
         self.history_t.clear()
-        self.history_left.clear()
         self.history_right.clear()
 
-        self.get_logger().info("Started distance measurement, storage, and box counting.")
+        self.get_logger().info("Started RIGHT distance measurement, storage, and box counting.")
 
     def record_sensor_values(self):
         if not self.measurement_started:
@@ -211,7 +208,6 @@ class WhiteLineFollowerWithSensorPlot(Node):
 
         t = time.time() - self.measurement_start_wall_time
         self.history_t.append(t)
-        self.history_left.append(self.left_range if self.valid_range(self.left_range) else np.nan)
         self.history_right.append(self.right_range if self.valid_range(self.right_range) else np.nan)
 
     def update_one_sensor_box_count(self, side_name, current_range,
@@ -230,21 +226,21 @@ class WhiteLineFollowerWithSensorPlot(Node):
             if detect_counter >= self.box_detect_frames:
                 active_flag = True
                 count_value += 1
-                release_counter = 0
                 detect_counter = 0
+                release_counter = 0
                 self.get_logger().info(
                     f"{side_name} box detected. count={count_value}, range={self.fmt_range(current_range)} m"
                 )
         else:
-            if current_range > self.box_release_distance:
+            if current_range > self.box_detect_distance:
                 release_counter += 1
             else:
                 release_counter = 0
 
             if release_counter >= self.box_release_frames:
                 active_flag = False
-                release_counter = 0
                 detect_counter = 0
+                release_counter = 0
 
         return active_flag, detect_counter, release_counter, count_value
 
@@ -280,19 +276,57 @@ class WhiteLineFollowerWithSensorPlot(Node):
             self.right_box_count
         )
 
+    def compute_derivative(self, t, y):
+        t = np.asarray(t, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        if len(t) < 2:
+            return np.array([])
+
+        dy = np.full_like(y, np.nan, dtype=float)
+
+        valid = np.isfinite(t) & np.isfinite(y)
+        if np.count_nonzero(valid) < 2:
+            return dy
+
+        valid_idx = np.where(valid)[0]
+        t_valid = t[valid]
+        y_valid = y[valid]
+
+        dy_valid = np.gradient(y_valid, t_valid)
+
+        for i, idx in enumerate(valid_idx):
+            dy[idx] = dy_valid[i]
+
+        return dy
+
     def plot_sensor_history(self):
         if len(self.history_t) == 0:
-            self.get_logger().info("No sensor history recorded. Skipping plot.")
+            self.get_logger().info("No right sensor history recorded. Skipping plot.")
             return
 
-        plt.figure(figsize=(10, 5))
-        plt.plot(self.history_t, self.history_left, label='Left sensor')
-        plt.plot(self.history_t, self.history_right, label='Right sensor')
+        t = np.array(self.history_t, dtype=float)
+        right = np.array(self.history_right, dtype=float)
+        right_derivative = self.compute_derivative(t, right)
+
+        plt.figure(figsize=(10, 8))
+
+        plt.subplot(2, 1, 1)
+        plt.plot(t, right, label='Right sensor raw')
         plt.xlabel('Time (s)')
         plt.ylabel('Distance (m)')
-        plt.title('Left and Right Distance Sensor Values')
-        plt.legend()
+        plt.title('Right Distance Sensor Raw Values')
         plt.grid(True)
+        plt.legend()
+
+        plt.subplot(2, 1, 2)
+        plt.plot(t, right_derivative, label='d(right)/dt')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Derivative (m/s)')
+        plt.title('Derivative of Right Distance Sensor')
+        plt.grid(True)
+        plt.legend()
+
         plt.tight_layout()
         plt.show()
 
@@ -324,7 +358,6 @@ class WhiteLineFollowerWithSensorPlot(Node):
 
         self.update_box_counts()
         self.record_sensor_values()
-
         self.cmd_pub.publish(twist)
 
         if self.print_distances_every_frame:
@@ -375,7 +408,7 @@ class WhiteLineFollowerWithSensorPlot(Node):
 
         cv2.putText(
             vis,
-            f"thr_detect={self.box_detect_distance:.2f} thr_release={self.box_release_distance:.2f}",
+            f"thr_detect={self.box_detect_distance:.2f}",
             (10, 155),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
@@ -406,9 +439,10 @@ class WhiteLineFollowerWithSensorPlot(Node):
             self.get_logger().info(
                 f"fps~{self.frame_count} state={self.state} "
                 f"main_area={int(area)} "
-                f"left_range={self.display_range(self.left_range)} right_range={self.display_range(self.right_range)} "
+                f"left_range={self.display_range(self.left_range)} "
+                f"right_range={self.display_range(self.right_range)} "
                 f"counts(L,R)=({self.left_box_count},{self.right_box_count}) "
-                f"stored_samples={len(self.history_t)} "
+                f"stored_right_samples={len(self.history_t)} "
                 f"cmd(v,w)=({twist.linear.x:.2f},{twist.angular.z:.2f})"
             )
             self.frame_count = 0
@@ -416,7 +450,7 @@ class WhiteLineFollowerWithSensorPlot(Node):
 
 def main():
     rclpy.init()
-    node = WhiteLineFollowerWithSensorPlot()
+    node = WhiteLineFollowerWithRightSensorPlot()
     try:
         rclpy.spin(node)
     finally:
@@ -429,7 +463,7 @@ def main():
         try:
             node.plot_sensor_history()
         except Exception as e:
-            node.get_logger().error(f"Failed to plot sensor history: {e}")
+            node.get_logger().error(f"Failed to plot right sensor history: {e}")
 
         node.destroy_node()
         cv2.destroyAllWindows()

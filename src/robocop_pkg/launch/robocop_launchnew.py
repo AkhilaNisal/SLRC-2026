@@ -160,9 +160,9 @@ def generate_launch_description():
             robot_arm_action_server,
             # robot_arm_centering_action_server,
             # task3,
-            # task2_with_arm,
+            task2_with_arm,
             # task_manager,
-            task1,
+            # task2,
 
 
         ]
@@ -174,7 +174,7 @@ def generate_launch_description():
         mpu_node,
         # pca9685_bridge,
         # moveit_demo,
-       # camera_feed_node,
+        camera_feed_node,
         tof_node,
         cmd_vel_stepper_node,
         delayed_task_nodes,
