@@ -121,7 +121,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         self.declare_parameter('tof_delta_threshold', 0.05)   # 5 cm drop from baseline → box
         self.declare_parameter('tof_baseline_window', 20)     # frames kept for rolling median
-        self.declare_parameter('tof_confirm_frames', 5)       # consecutive delta-hits to confirm
+        self.declare_parameter('tof_confirm_frames', 3)       # consecutive delta-hits to confirm
 
         # ignore box search at first line-follow start
         self.declare_parameter('startup_box_ignore_distance', 0.25)
@@ -411,6 +411,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # Debug sparkline history (separate from baseline — always updated, finite-invalid clamped to max)
         self.left_vis_buf: deque = deque(maxlen=120)
         self.right_vis_buf: deque = deque(maxlen=120)
+        self._last_left_drop = float('nan')
+        self._last_right_drop = float('nan')
 
         # LED blink state
         self._led_line = None          # gpiod line handle, set by _init_led
@@ -727,21 +729,25 @@ class WhiteLineFollowerWithBoxVisit(Node):
         left_ready = self.left_detect_counter >= self.tof_confirm_frames
         right_ready = self.right_detect_counter >= self.tof_confirm_frames
 
-        if self.left_detect_counter > 0 or self.right_detect_counter > 0:
-            left_base = (
-                float(np.median(list(self.left_baseline_buf)))
-                if len(self.left_baseline_buf) >= 3 else float('nan')
-            )
-            right_base = (
-                float(np.median(list(self.right_baseline_buf)))
-                if len(self.right_baseline_buf) >= 3 else float('nan')
-            )
-            self.get_logger().debug(
-                f"BoxDetect: L_cnt={self.left_detect_counter}/{self.tof_confirm_frames} "
-                f"R_cnt={self.right_detect_counter}/{self.tof_confirm_frames} "
-                f"L_filt={self.fmt_range(self.left_range)} L_base={left_base:.3f} "
-                f"R_filt={self.fmt_range(self.right_range)} R_base={right_base:.3f}"
-            )
+        left_base = (
+            float(np.median(list(self.left_baseline_buf)))
+            if len(self.left_baseline_buf) >= 3 else float('nan')
+        )
+        right_base = (
+            float(np.median(list(self.right_baseline_buf)))
+            if len(self.right_baseline_buf) >= 3 else float('nan')
+        )
+        left_drop = (left_base - self.left_range) if not math.isnan(left_base) else float('nan')
+        right_drop = (right_base - self.right_range) if not math.isnan(right_base) else float('nan')
+        self.get_logger().info(
+            f"BoxDetect: L_cnt={self.left_detect_counter}/{self.tof_confirm_frames} "
+            f"R_cnt={self.right_detect_counter}/{self.tof_confirm_frames} "
+            f"L_drop={left_drop:.3f} R_drop={right_drop:.3f} thresh={self.tof_delta_threshold:.3f} "
+            f"L_filt={self.fmt_range(self.left_range)} L_base={left_base:.3f} "
+            f"R_filt={self.fmt_range(self.right_range)} R_base={right_base:.3f}"
+        )
+        self._last_left_drop = left_drop
+        self._last_right_drop = right_drop
 
         if not left_ready and not right_ready:
             return None
@@ -1259,8 +1265,10 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # status lines
         meas_color = (0, 255, 0) if self.measurement_started else (0, 0, 255)
         ignore_color = (0, 0, 255) if self.startup_ignore_active_now() else (0, 255, 0)
+        l_drop_txt = f"{self._last_left_drop:.3f}" if not math.isnan(self._last_left_drop) else "?"
+        r_drop_txt = f"{self._last_right_drop:.3f}" if not math.isnan(self._last_right_drop) else "?"
         cv2.putText(canvas,
-                    f"L={self.fmt_range(self.left_range)} R={self.fmt_range(self.right_range)}  drop_thresh={self.tof_delta_threshold:.3f}m",
+                    f"L={self.fmt_range(self.left_range)} drop={l_drop_txt}  R={self.fmt_range(self.right_range)} drop={r_drop_txt}  need>{self.tof_delta_threshold:.3f}m",
                     (5, plot_h + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
         cv2.putText(canvas,
                     f"meas={'ON' if self.measurement_started else 'OFF'}  startup_ignore={'ON' if self.startup_ignore_active_now() else 'OFF'}  "
