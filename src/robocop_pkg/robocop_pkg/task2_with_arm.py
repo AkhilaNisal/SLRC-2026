@@ -408,6 +408,10 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.left_baseline_buf: deque = deque(maxlen=self.tof_baseline_window)
         self.right_baseline_buf: deque = deque(maxlen=self.tof_baseline_window)
 
+        # Debug sparkline history (separate from baseline — always updated, finite-invalid clamped to max)
+        self.left_vis_buf: deque = deque(maxlen=120)
+        self.right_vis_buf: deque = deque(maxlen=120)
+
         # LED blink state
         self._led_line = None          # gpiod line handle, set by _init_led
         self._blink_count = 0          # how many half-periods have elapsed
@@ -493,11 +497,13 @@ class WhiteLineFollowerWithBoxVisit(Node):
         raw = float(msg.range)
         self.left_range_raw = raw
         self.left_range = self.low_pass_filter(self.left_range, raw, self.left_range_filter_alpha)
+        self.left_vis_buf.append(self.left_range if self.valid_range(self.left_range) else 2.0)
 
     def right_range_cb(self, msg: Range):
         raw = float(msg.range)
         self.right_range_raw = raw
         self.right_range = self.low_pass_filter(self.right_range, raw, self.range_filter_alpha)
+        self.right_vis_buf.append(self.right_range if self.valid_range(self.right_range) else 2.0)
 
     def front_range_cb(self, msg: Range):
         raw = float(msg.range)
@@ -1193,6 +1199,56 @@ class WhiteLineFollowerWithBoxVisit(Node):
         else:
             self.get_logger().warn(f"Pick action failed: {self.pick_result_message}")
 
+    def _draw_tof_sparkline(self, vis):
+        """
+        Draw left (cyan) and right (yellow) ToF distance sparklines on the bottom
+        of the debug frame. Range 0–2 m maps to the plot height. A horizontal
+        dashed line shows the detection threshold drop from each baseline.
+        """
+        if not self.debug:
+            return
+        h, w = vis.shape[:2]
+        plot_h = 60       # pixels tall
+        plot_w = min(w, 240)
+        x0 = w - plot_w - 5
+        y0 = h - plot_h - 5
+        max_m = 2.0       # clamp display range to 2 m
+
+        # background
+        cv2.rectangle(vis, (x0, y0), (x0 + plot_w, y0 + plot_h), (30, 30, 30), -1)
+        cv2.rectangle(vis, (x0, y0), (x0 + plot_w, y0 + plot_h), (80, 80, 80), 1)
+
+        def draw_line(buf, color):
+            pts = list(buf)
+            if len(pts) < 2:
+                return
+            step = plot_w / (len(pts) - 1)
+            for i in range(len(pts) - 1):
+                v1 = min(pts[i], max_m) / max_m
+                v2 = min(pts[i + 1], max_m) / max_m
+                px1 = int(x0 + i * step)
+                py1 = int(y0 + plot_h - v1 * plot_h)
+                px2 = int(x0 + (i + 1) * step)
+                py2 = int(y0 + plot_h - v2 * plot_h)
+                cv2.line(vis, (px1, py1), (px2, py2), color, 1)
+
+        draw_line(self.left_vis_buf, (255, 255, 0))   # cyan-ish = left
+        draw_line(self.right_vis_buf, (0, 255, 255))  # yellow-ish = right
+
+        # threshold line for each side (baseline - delta_threshold)
+        for buf, color in [(self.left_baseline_buf, (255, 255, 0)),
+                           (self.right_baseline_buf, (0, 255, 255))]:
+            if len(buf) >= 3:
+                thresh = float(np.median(list(buf))) - self.tof_delta_threshold
+                thresh = max(0.0, min(thresh, max_m))
+                ty = int(y0 + plot_h - (thresh / max_m) * plot_h)
+                cv2.line(vis, (x0, ty), (x0 + plot_w, ty), color, 1, cv2.LINE_4)
+
+        cv2.putText(vis, "L ToF", (x0 + 2, y0 - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
+        cv2.putText(vis, "R ToF", (x0 + 50, y0 - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+
     def image_cb(self, msg: Image):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         h, w = frame.shape[:2]
@@ -1612,6 +1668,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
             (0, 255, 0),
             2
         )
+
+        self._draw_tof_sparkline(vis)
 
         if self.debug:
             cv2.imshow("camera", vis)
