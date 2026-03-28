@@ -158,7 +158,7 @@ def generate_launch_description():
         period=8.0,
         actions=[
             robot_arm_action_server,
-            # robot_arm_centering_action_server,
+            robot_arm_centering_action_server,
             # task3,
             task2_with_arm,
             # task_manager,
@@ -172,8 +172,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         mpu_node,
-        # pca9685_bridge,
-        # moveit_demo,
+        pca9685_bridge,
+        moveit_demo,
         camera_feed_node,
         tof_node,
         cmd_vel_stepper_node,

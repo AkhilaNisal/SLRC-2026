@@ -19,7 +19,6 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
-
 from robot_arm_interfaces.action import PickBox
 
 
@@ -175,7 +174,6 @@ class SideBoxVariationDetector:
 
         raw_excursion = max(0.0, self.baseline - self.fast)
 
-        # Let the slow baseline adapt only when we are not inside a clear valley.
         if (not self.tracking and raw_excursion < self.freeze_drop) or (not enabled):
             self.baseline = (
                 self.baseline_alpha * self.fast +
@@ -293,6 +291,11 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('search_linear', 0.04)
         self.declare_parameter('search_angular', 0.35)
 
+        # front wall approach after leaving line follower
+        self.declare_parameter('front_wall_detect_distance', 0.40)
+        self.declare_parameter('front_wall_stop_distance', 0.20)
+        self.declare_parameter('front_wall_approach_speed', 0.08)
+
         # =========================
         # Gyro turning control
         # =========================
@@ -344,7 +347,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         # Distance sensing / filter
         # =========================
-        self.declare_parameter('range_filter_alpha', 0.1)
+        self.declare_parameter('range_filter_alpha', 0.000)
         self.declare_parameter('left_range_filter_alpha', 0.3)
         self.declare_parameter('print_distances_every_frame', True)
 
@@ -374,7 +377,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('side_variation_cooldown_sec', 1.20)
 
         # front obstacle / wall stop
-        self.declare_parameter('front_obstacle_stop_distance', 0.20)
+        self.declare_parameter('front_obstacle_stop_distance', 0.30)
         self.declare_parameter('front_obstacle_stop_frames', 3)
 
         # =========================
@@ -414,7 +417,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('target_box_count', 6)
         self.declare_parameter('task2_finish_wall_distance', 0.6)
         self.declare_parameter('task2_finish_wall_frames', 1)
-        self.declare_parameter('task2_finish_forward_speed', 0.08)
+        self.declare_parameter('task2_finish_forward_speed', 0.00)
 
         # =========================
         # Read params
@@ -442,6 +445,10 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         self.search_linear = float(self.get_parameter('search_linear').value)
         self.search_angular = float(self.get_parameter('search_angular').value)
+
+        self.front_wall_detect_distance = float(self.get_parameter('front_wall_detect_distance').value)
+        self.front_wall_stop_distance = float(self.get_parameter('front_wall_stop_distance').value)
+        self.front_wall_approach_speed = float(self.get_parameter('front_wall_approach_speed').value)
 
         self.turn_angle_90_deg = float(self.get_parameter('turn_angle_90_deg').value)
         self.turn_tolerance_deg = float(self.get_parameter('turn_tolerance_deg').value)
@@ -583,6 +590,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.STATE_LINE_CROSS_POST_WAIT = 'LINE_CROSS_POST_WAIT'
 
         self.STATE_FOLLOW_LINE = 'FOLLOW_LINE'
+        self.STATE_FRONT_APPROACH = 'FRONT_APPROACH'
 
         self.STATE_BOX_FORWARD_BEFORE_TURN = 'BOX_FORWARD_BEFORE_TURN'
         self.STATE_BOX_TURN_TO_BOX = 'BOX_TURN_TO_BOX'
@@ -717,7 +725,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
         )
 
         self.get_logger().info(
-            "Started task2_with_arm with slower front-stop box approach, "
+            "Started task2_with_arm with front wall exit from white-line following, "
+            "front approach to 0.20m stop, slower front-stop box approach, "
             "pick settle wait, action retry wait, same-box ignore and front obstacle stop."
         )
 
@@ -1476,16 +1485,17 @@ class WhiteLineFollowerWithBoxVisit(Node):
             self.run_line_cross_sequence(bottom_area, twist)
 
         elif self.state == self.STATE_FOLLOW_LINE:
-            if self.front_obstacle_should_stop():
+
+            # Exit white-line follower when front wall is detected below 0.40 m
+            if self.valid_range(self.front_range_raw) and self.front_range_raw < self.front_wall_detect_distance:
+                self.get_logger().info(
+                    f"Front wall detected at {self.front_range_raw:.3f} m. "
+                    f"Exiting white-line following and moving straight until "
+                    f"{self.front_wall_stop_distance:.3f} m."
+                )
                 twist.linear.x = 0.0
                 twist.angular.z = 0.0
-                self.state = self.STATE_TASK2_DONE
-                self.task2_done = True
-                self.stop_robot()
-                self.publish_task_done()
-                self.get_logger().info(
-                    f"Front obstacle/wall detected at {self.fmt_range(self.front_range)} m. Ending task."
-                )
+                self.state = self.STATE_FRONT_APPROACH
 
             elif self.boxes_completed >= self.target_box_count:
                 twist.linear.x = self.task2_finish_forward_speed
@@ -1520,6 +1530,30 @@ class WhiteLineFollowerWithBoxVisit(Node):
                     twist.linear.x = 0.0
                     twist.angular.z = 0.0
                     self.start_box_detour(side)
+
+        elif self.state == self.STATE_FRONT_APPROACH:
+            # Move straight forward until front distance reaches 0.20 m, then stop
+            if self.valid_range(self.front_range_raw):
+                if self.front_range_raw > self.front_wall_stop_distance:
+                    twist.linear.x = self.front_wall_approach_speed
+                    twist.angular.z = 0.0
+                else:
+                    twist.linear.x = 0.0
+                    twist.angular.z = 0.0
+                    self.state = self.STATE_TASK2_DONE
+                    self.task2_done = True
+                    self.stop_robot()
+                    self.publish_task_done()
+                    self.get_logger().info(
+                        f"Front approach complete. Reached stop distance: "
+                        f"{self.front_range_raw:.3f} m <= {self.front_wall_stop_distance:.3f} m"
+                    )
+            else:
+                twist.linear.x = 0.0
+                twist.angular.z = 0.0
+                self.get_logger().warn(
+                    "Front range invalid during FRONT_APPROACH. Holding position."
+                )
 
         elif self.state == self.STATE_BOX_FORWARD_BEFORE_TURN:
             if area > self.min_area:
@@ -1855,8 +1889,18 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         cv2.putText(
             vis,
-            f"LEFT count={self.left_box_count} RIGHT count={self.right_box_count}",
+            f"front_exit={self.front_wall_detect_distance:.2f} front_final={self.front_wall_stop_distance:.2f}",
             (10, 275),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 220, 150),
+            2
+        )
+
+        cv2.putText(
+            vis,
+            f"LEFT count={self.left_box_count} RIGHT count={self.right_box_count}",
+            (10, 305),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 165, 255),
@@ -1866,7 +1910,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"boxes_completed={self.boxes_completed}/{self.target_box_count}",
-            (10, 305),
+            (10, 335),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 220, 120),
@@ -1876,7 +1920,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"active_box={self.active_box_side} red_found={red_found} red_ok={self.box_red_confirmed}",
-            (10, 335),
+            (10, 365),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (200, 255, 200),
@@ -1888,7 +1932,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"yaw={yaw_txt} target={tgt_txt}",
-            (10, 365),
+            (10, 395),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (200, 255, 255),
@@ -1898,7 +1942,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"Ltrack={self.left_side_info.get('tracking', False)} Rtrack={self.right_side_info.get('tracking', False)} red_confirm={self.red_confirm_counter}/{self.red_confirm_frames}",
-            (10, 395),
+            (10, 425),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 200, 255),
@@ -1908,7 +1952,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         cv2.putText(
             vis,
             f"cmd v={twist.linear.x:.2f} w={twist.angular.z:.2f}",
-            (10, 425),
+            (10, 455),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (0, 255, 0),
