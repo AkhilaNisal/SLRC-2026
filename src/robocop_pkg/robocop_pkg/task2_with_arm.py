@@ -44,7 +44,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # Motion control
         # =========================
         self.declare_parameter('forward_speed', 0.25)
-        self.declare_parameter('linear_speed', 0.15)
+        self.declare_parameter('linear_speed', 0.10)
         self.declare_parameter('kp', 0.004)
         self.declare_parameter('max_angular', 1.2)
 
@@ -174,7 +174,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('task2_finish_forward_speed', 0.08)
 
         # Debug visualization (disable on headless robot)
-        self.declare_parameter('debug', False)
+        self.declare_parameter('debug', True)
 
         # =========================
         # Read params
