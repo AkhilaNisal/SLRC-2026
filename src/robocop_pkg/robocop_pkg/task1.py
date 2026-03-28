@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 
+import json
 import math
 from enum import Enum
 
+import gpiod
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import Range
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32, Int32, Empty
+from std_msgs.msg import Float32, Int32, Empty, String
 
 
 class NavState(Enum):
@@ -17,6 +19,7 @@ class NavState(Enum):
     REFRESH_FOR_DECISION = 1
     STOP_AND_DECIDE = 2
     TURNING = 3
+    TAG_BLINK = 4
 
 
 class TurnDir(Enum):
@@ -158,6 +161,14 @@ class Task1MazeNode(Node):
         self.declare_parameter('debug_every_n_cycles', 5)
 
         # =========================
+        # AprilTag + LED
+        # =========================
+        self.declare_parameter('apriltag_topic', '/apriltag/decoded')
+        self.declare_parameter('led_chip_name', 'gpiochip4')
+        self.declare_parameter('led_pin', 26)
+        self.declare_parameter('blink_half_period_sec', 0.3)
+
+        # =========================
         # Turn controller
         # =========================
         self.declare_parameter('turn_angular_speed', 0.45)
@@ -260,6 +271,11 @@ class Task1MazeNode(Node):
         self.junction_cooldown_sec = float(self.get_parameter('junction_cooldown_sec').value)
         self.prefer_left_first = bool(self.get_parameter('prefer_left_first').value)
 
+        self.apriltag_topic = self.get_parameter('apriltag_topic').value
+        self.led_chip_name = str(self.get_parameter('led_chip_name').value)
+        self.led_pin = int(self.get_parameter('led_pin').value)
+        self.blink_half_period_sec = float(self.get_parameter('blink_half_period_sec').value)
+
         # =========================
         # State
         # =========================
@@ -339,6 +355,15 @@ class Task1MazeNode(Node):
         self.cell_count = 0
         self.segment_cells_counted = 0
 
+        # AprilTag detection state
+        self.seen_tag_ids: set = set()
+        self._tag_blink_queued = False
+
+        # LED blink state
+        self._led_line = None
+        self._blink_count = 0
+        self._blink_timer = None
+
         # ROS interfaces
         self.left_sub = self.create_subscription(
             Range, self.left_range_topic, self.left_cb, qos_profile_sensor_data
@@ -362,6 +387,11 @@ class Task1MazeNode(Node):
         self.junction_count_pub = self.create_publisher(Int32, self.junction_count_topic, 10)
         self.dead_end_count_pub = self.create_publisher(Int32, self.dead_end_count_topic, 10)
         self.cell_count_pub = self.create_publisher(Int32, self.cell_count_topic, 10)
+
+        self._init_led()
+        self.apriltag_sub = self.create_subscription(
+            String, self.apriltag_topic, self._apriltag_cb, 10
+        )
 
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self.control_loop)
 
@@ -1179,6 +1209,86 @@ class Task1MazeNode(Node):
         return False
 
     # ============================================================
+    # AprilTag detection + LED blink
+    # ============================================================
+    def _init_led(self):
+        """Open the gpiod LED line. Logs a warning and continues if it fails."""
+        try:
+            chip = gpiod.Chip(self.led_chip_name)
+            self._led_line = chip.get_line(self.led_pin)
+            self._led_line.request(
+                consumer='task1_led',
+                type=gpiod.LINE_REQ_DIR_OUT,
+                default_vals=[0]
+            )
+            self.get_logger().info(
+                f'Red LED initialized on {self.led_chip_name} pin {self.led_pin}'
+            )
+        except Exception as exc:
+            self._led_line = None
+            self.get_logger().warn(
+                f'LED init failed ({self.led_chip_name} pin {self.led_pin}): {exc}. '
+                'Tag detection will log only — no physical blink.'
+            )
+
+    def _set_led(self, on: bool):
+        if self._led_line is None:
+            return
+        try:
+            self._led_line.set_value(1 if on else 0)
+        except Exception as exc:
+            self.get_logger().warn(f'LED set_value error: {exc}')
+
+    def _start_tag_blink(self):
+        """Stop the robot and blink the red LED twice to signal tag detection."""
+        if self._blink_timer is not None:
+            self._blink_timer.cancel()
+            self._blink_timer = None
+
+        self._blink_count = 0
+        self.nav_state = NavState.TAG_BLINK
+        self._set_led(True)
+        self._blink_timer = self.create_timer(self.blink_half_period_sec, self._blink_step)
+        self.get_logger().info('AprilTag detected — stopped, blinking red LED ×2.')
+
+    def _blink_step(self):
+        """Timer callback: drives ON→OFF→ON→OFF sequence then resumes navigation."""
+        self._blink_count += 1
+        led_on = (self._blink_count % 2 == 0)
+        self._set_led(led_on)
+
+        if self._blink_count >= 3:
+            self._set_led(False)
+            self._blink_timer.cancel()
+            self._blink_timer = None
+            self.nav_state = NavState.FOLLOW
+            self.get_logger().info('Blink complete — resuming navigation.')
+
+    def _apriltag_cb(self, msg: String):
+        """Called whenever apriltag_decoder publishes a new detection."""
+        try:
+            payload = json.loads(msg.data)
+        except Exception:
+            return
+
+        incoming_ids = set(payload.get('tag_ids', []))
+        new_ids = incoming_ids - self.seen_tag_ids
+        if not new_ids:
+            return
+
+        self.seen_tag_ids |= new_ids
+        decoded = payload.get('decoded_by_order', {})
+        self.get_logger().info(
+            f'[APRILTAG] New tag(s): {sorted(new_ids)} | '
+            f'total seen={len(self.seen_tag_ids)}/8 | decoded={decoded}'
+        )
+
+        if self.nav_state == NavState.FOLLOW:
+            self._start_tag_blink()
+        else:
+            self._tag_blink_queued = True
+
+    # ============================================================
     # Control loop
     # ============================================================
     def control_loop(self):
@@ -1205,7 +1315,16 @@ class Task1MazeNode(Node):
             self.begin_turn(decision)
             return
 
+        if self.nav_state == NavState.TAG_BLINK:
+            self.stop_cmd()
+            return
+
         # FOLLOW
+        if self._tag_blink_queued:
+            self._tag_blink_queued = False
+            self._start_tag_blink()
+            return
+
         self.update_wall_presence()
 
         left_open = self.left_valid and self.left_range is not None and self.left_range > self.turn_open_distance

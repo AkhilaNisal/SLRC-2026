@@ -28,6 +28,19 @@ def generate_launch_description():
         output='screen'
     )
 
+    apriltag_decoder_node = Node(
+        package='apriltag_decoder',
+        executable='apriltag_decoder_node',
+        name='apriltag_decoder_node',
+        output='screen',
+        parameters=[{
+            'required_unique_tags': 8,
+            'families': 'tagStandard52h13',
+            'publish_on_each_detection': True,
+            'publish_debug_image': True,
+        }]
+    )
+
     tof_node = Node(
         package='tof_sensors',
         executable='tof_node',
@@ -89,6 +102,7 @@ def generate_launch_description():
     return LaunchDescription([
         mpu_node,
         camera_feed_node,
+        apriltag_decoder_node,
         tof_node,
         cmd_vel_stepper_node,
         delayed_task_nodes,

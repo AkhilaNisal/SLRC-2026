@@ -141,6 +141,20 @@ class RobotArmActionServer(Node):
         self.declare_parameter("lift.arm1_arm2_joint", 0.6981)
         self.declare_parameter("lift.arm2_gripper_base_joint", -1.4137)
 
+        # lift_1: intermediate waypoint 1 (grab -> lift_1 -> lift_2 -> lift for straight vertical)
+        # gripper rises ~9mm while drifting only ~1mm backward
+        self.declare_parameter("lift_1.base_rotating_waste_joint", 0.0873)
+        self.declare_parameter("lift_1.rotating_waste_arm1_joint", 0.9163)
+        self.declare_parameter("lift_1.arm1_arm2_joint", 0.6981)
+        self.declare_parameter("lift_1.arm2_gripper_base_joint", -1.3875)
+
+        # lift_2: intermediate waypoint 2
+        # gripper rises another ~9mm
+        self.declare_parameter("lift_2.base_rotating_waste_joint", 0.0873)
+        self.declare_parameter("lift_2.rotating_waste_arm1_joint", 0.8552)
+        self.declare_parameter("lift_2.arm1_arm2_joint", 0.6981)
+        self.declare_parameter("lift_2.arm2_gripper_base_joint", -1.3963)
+
         # place1 = [-16, 12, -100, 67]    -16,-7,-110,50
         self.declare_parameter("place1.base_rotating_waste_joint", -0.2793)
         self.declare_parameter("place1.rotating_waste_arm1_joint", 0.2094)
@@ -438,9 +452,11 @@ class RobotArmActionServer(Node):
         return f"place{pose_index}"
 
     def do_pick_place_sequence(self, goal_handle, side: str, place_prefix: str):
-        home_joints = self.get_arm_joint_dict("home")
-        grab_joints = self.get_arm_joint_dict("grab")
-        lift_joints = self.get_arm_joint_dict("lift")
+        home_joints  = self.get_arm_joint_dict("home")
+        grab_joints  = self.get_arm_joint_dict("grab")
+        lift1_joints = self.get_arm_joint_dict("lift_1")
+        lift2_joints = self.get_arm_joint_dict("lift_2")
+        lift_joints  = self.get_arm_joint_dict("lift")
         place_joints = self.get_arm_joint_dict(place_prefix)
 
         self.publish_feedback(goal_handle, "gripper_open", 0.10)
@@ -449,19 +465,32 @@ class RobotArmActionServer(Node):
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after gripper_open")
 
-        self.publish_feedback(goal_handle, "move_grab_pose", 0.25)
+        self.publish_feedback(goal_handle, "move_grab_pose", 0.22)
         if not self.move_arm_joint_values_with_retry(grab_joints, "grab"):
             return self.fail_result(goal_handle, "Failed at step: grab")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after grab")
 
-        self.publish_feedback(goal_handle, "gripper_close", 0.40)
+        self.publish_feedback(goal_handle, "gripper_close", 0.34)
         if not self.close_gripper():
             return self.fail_result(goal_handle, "Failed at step: gripper_close")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after gripper_close")
 
-        self.publish_feedback(goal_handle, "move_lift_pose", 0.55)
+        # Stepped vertical lift: three short OMPL segments to approximate a straight-up path
+        self.publish_feedback(goal_handle, "move_lift_1", 0.44)
+        if not self.move_arm_joint_values_with_retry(lift1_joints, "lift_1"):
+            return self.fail_result(goal_handle, "Failed at step: lift_1")
+        if goal_handle.is_cancel_requested:
+            return self.canceled_result(goal_handle, "Goal canceled after lift_1")
+
+        self.publish_feedback(goal_handle, "move_lift_2", 0.50)
+        if not self.move_arm_joint_values_with_retry(lift2_joints, "lift_2"):
+            return self.fail_result(goal_handle, "Failed at step: lift_2")
+        if goal_handle.is_cancel_requested:
+            return self.canceled_result(goal_handle, "Goal canceled after lift_2")
+
+        self.publish_feedback(goal_handle, "move_lift_pose", 0.56)
         if not self.move_arm_joint_values_with_retry(lift_joints, "lift"):
             return self.fail_result(goal_handle, "Failed at step: lift")
         if goal_handle.is_cancel_requested:
