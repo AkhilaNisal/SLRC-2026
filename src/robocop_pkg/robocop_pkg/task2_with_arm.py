@@ -1201,17 +1201,30 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
     def _draw_tof_sparkline(self):
         """
-        Draw left (cyan) and right (yellow) ToF distance sparklines in a
-        separate window. Range 0–2 m maps to the plot height. A horizontal
-        line shows the detection threshold drop from each baseline.
+        Draw left (yellow) and right (cyan) ToF distance sparklines in a
+        separate window. Y-axis auto-scales to the visible data so small
+        changes are visible. Dashed lines show the detection trigger level
+        (baseline - delta_threshold) for each side.
         """
         if not self.debug:
             return
         plot_h = 150
         plot_w = 400
-        max_m = 2.0
+        margin = 0.05  # metres of padding above/below data range
 
-        canvas = np.zeros((plot_h + 30, plot_w, 3), dtype=np.uint8)
+        all_pts = list(self.left_vis_buf) + list(self.right_vis_buf)
+        valid = [v for v in all_pts if 0.0 < v < 1.9]
+        if valid:
+            y_min = max(0.0, min(valid) - margin)
+            y_max = min(2.0, max(valid) + margin)
+        else:
+            y_min, y_max = 0.0, 2.0
+        y_range = y_max - y_min if y_max > y_min else 0.1
+
+        canvas = np.zeros((plot_h + 50, plot_w, 3), dtype=np.uint8)
+
+        def to_py(val):
+            return int(plot_h - ((min(val, y_max) - y_min) / y_range) * plot_h)
 
         def draw_line(buf, color):
             pts = list(buf)
@@ -1219,28 +1232,43 @@ class WhiteLineFollowerWithBoxVisit(Node):
                 return
             step = plot_w / (len(pts) - 1)
             for i in range(len(pts) - 1):
-                v1 = min(pts[i], max_m) / max_m
-                v2 = min(pts[i + 1], max_m) / max_m
-                px1 = int(i * step)
-                py1 = int(plot_h - v1 * plot_h)
-                px2 = int((i + 1) * step)
-                py2 = int(plot_h - v2 * plot_h)
-                cv2.line(canvas, (px1, py1), (px2, py2), color, 1)
+                cv2.line(canvas,
+                         (int(i * step), to_py(pts[i])),
+                         (int((i + 1) * step), to_py(pts[i + 1])),
+                         color, 1)
 
-        draw_line(self.left_vis_buf, (255, 255, 0))
-        draw_line(self.right_vis_buf, (0, 255, 255))
+        draw_line(self.left_vis_buf, (255, 255, 0))    # yellow = left
+        draw_line(self.right_vis_buf, (0, 255, 255))   # cyan = right
 
-        # threshold line for each side (baseline - delta_threshold)
+        # trigger threshold line per side
         for buf, color in [(self.left_baseline_buf, (255, 255, 0)),
                            (self.right_baseline_buf, (0, 255, 255))]:
             if len(buf) >= 3:
                 thresh = float(np.median(list(buf))) - self.tof_delta_threshold
-                thresh = max(0.0, min(thresh, max_m))
-                ty = int(plot_h - (thresh / max_m) * plot_h)
-                cv2.line(canvas, (0, ty), (plot_w, ty), color, 1)
+                thresh = max(y_min, min(thresh, y_max))
+                ty = to_py(thresh)
+                for x in range(0, plot_w, 8):
+                    cv2.line(canvas, (x, ty), (min(x + 4, plot_w), ty), color, 1)
 
-        cv2.putText(canvas, f"L={self.fmt_range(self.left_range)}  R={self.fmt_range(self.right_range)}  thresh_drop={self.tof_delta_threshold:.2f}m",
-                    (5, plot_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+        # y-axis labels
+        cv2.putText(canvas, f"{y_max:.2f}m", (2, 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+        cv2.putText(canvas, f"{y_min:.2f}m", (2, plot_h - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+
+        # status lines
+        meas_color = (0, 255, 0) if self.measurement_started else (0, 0, 255)
+        ignore_color = (0, 0, 255) if self.startup_ignore_active_now() else (0, 255, 0)
+        cv2.putText(canvas,
+                    f"L={self.fmt_range(self.left_range)} R={self.fmt_range(self.right_range)}  drop_thresh={self.tof_delta_threshold:.3f}m",
+                    (5, plot_h + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
+        cv2.putText(canvas,
+                    f"meas={'ON' if self.measurement_started else 'OFF'}  startup_ignore={'ON' if self.startup_ignore_active_now() else 'OFF'}  "
+                    f"Lcnt={self.left_detect_counter} Rcnt={self.right_detect_counter}/{self.tof_confirm_frames}",
+                    (5, plot_h + 38), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
+        # colour-code meas/ignore indicators
+        cv2.circle(canvas, (37, plot_h + 14), 4, meas_color, -1)
+        cv2.circle(canvas, (130, plot_h + 14), 4, ignore_color, -1)
 
         cv2.imshow("ToF distances", canvas)
 
