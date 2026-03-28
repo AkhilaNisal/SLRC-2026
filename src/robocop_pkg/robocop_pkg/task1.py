@@ -119,7 +119,7 @@ class Task1MazeNode(Node):
         self.declare_parameter('side_filter_alpha', 0.22)
         self.declare_parameter('front_filter_alpha', 0.30)
         self.declare_parameter('max_side_jump', 0.14)
-        self.declare_parameter('max_front_jump', 0.22)
+        self.declare_parameter('max_front_jump', 2.0)
         self.declare_parameter('corridor_width_alpha', 0.10)
 
         # =========================

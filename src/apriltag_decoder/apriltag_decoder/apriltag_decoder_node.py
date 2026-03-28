@@ -22,6 +22,7 @@ class AprilTagDecoderNode(Node):
         self.declare_parameter('required_unique_tags', 14)
         self.declare_parameter('publish_on_each_detection', True)
         self.declare_parameter('publish_debug_image', True)
+        self.declare_parameter('show_debug_window', True)
 
         self.image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.decoded_topic = self.get_parameter('decoded_topic').get_parameter_value().string_value
@@ -35,6 +36,9 @@ class AprilTagDecoderNode(Node):
         )
         self.publish_debug_image = bool(
             self.get_parameter('publish_debug_image').get_parameter_value().bool_value
+        )
+        self.show_debug_window = bool(
+            self.get_parameter('show_debug_window').get_parameter_value().bool_value
         )
 
         self.bridge = CvBridge()
@@ -93,7 +97,7 @@ class AprilTagDecoderNode(Node):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         detections = self.detector.detect(gray)
 
-        if self.publish_debug_image and detections:
+        if (self.publish_debug_image or self.show_debug_window) and detections:
             for tag in detections:
                 corners = tag.corners.reshape((-1, 1, 2)).astype(int)
                 cv2.polylines(frame, [corners], True, (0, 0, 255), 4)
@@ -133,6 +137,26 @@ class AprilTagDecoderNode(Node):
             debug_msg = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
             debug_msg.header = msg.header
             self.debug_image_pub.publish(debug_msg)
+
+        if self.show_debug_window:
+            cv2.putText(
+                frame,
+                f'Tags: {len(self.found_tags)}/{self.required_unique_tags}',
+                (8, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 0),
+                2,
+            )
+            try:
+                cv2.imshow('AprilTag Debug', frame)
+                cv2.waitKey(1)
+            except cv2.error as e:
+                self.get_logger().warn(
+                    f'Debug window unavailable (no display?): {e}. '
+                    'Use ssh -X or view /apriltag/debug_image with rqt_image_view instead.',
+                    throttle_duration_sec=10.0,
+                )
 
     def publish_decoded_output(self, final: bool) -> None:
         decoded = decode_all_tags(self.found_tags)
@@ -274,5 +298,6 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        cv2.destroyAllWindows()
         node.destroy_node()
         rclpy.shutdown()
