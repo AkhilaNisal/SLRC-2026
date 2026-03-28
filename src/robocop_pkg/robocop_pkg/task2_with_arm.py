@@ -691,29 +691,30 @@ class WhiteLineFollowerWithBoxVisit(Node):
 
         if self.startup_ignore_active_now():
             # Still prime baselines during startup ignore, but don't trigger.
-            self._compute_delta(self.left_range, self.left_baseline_buf)
-            self._compute_delta(self.right_range, self.right_baseline_buf)
+            self._compute_delta(self.left_range_raw, self.left_baseline_buf)
+            self._compute_delta(self.right_range_raw, self.right_baseline_buf)
             self.reset_box_detection_counters()
             return None
 
         # --- Left side ---
+        # Use raw readings for delta detection — the EMA is too slow and drags
+        # the baseline down before the threshold is ever crossed.
         if left_ignored:
-            # Freely update baseline while ignored so it is fresh when ignore ends.
-            if self.valid_range(self.left_range):
-                self.left_baseline_buf.append(self.left_range)
+            if self.valid_range(self.left_range_raw):
+                self.left_baseline_buf.append(self.left_range_raw)
             self.left_detect_counter = 0
             left_delta = False
         else:
-            left_delta = self._compute_delta(self.left_range, self.left_baseline_buf)
+            left_delta = self._compute_delta(self.left_range_raw, self.left_baseline_buf)
 
         # --- Right side ---
         if right_ignored:
-            if self.valid_range(self.right_range):
-                self.right_baseline_buf.append(self.right_range)
+            if self.valid_range(self.right_range_raw):
+                self.right_baseline_buf.append(self.right_range_raw)
             self.right_detect_counter = 0
             right_delta = False
         else:
-            right_delta = self._compute_delta(self.right_range, self.right_baseline_buf)
+            right_delta = self._compute_delta(self.right_range_raw, self.right_baseline_buf)
 
         # --- Update confirm counters (fast reset on miss, no slow-decay needed at 20 Hz) ---
         if left_delta:
@@ -737,8 +738,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
             float(np.median(list(self.right_baseline_buf)))
             if len(self.right_baseline_buf) >= 3 else float('nan')
         )
-        left_drop = (left_base - self.left_range) if not math.isnan(left_base) else float('nan')
-        right_drop = (right_base - self.right_range) if not math.isnan(right_base) else float('nan')
+        left_drop = (left_base - self.left_range_raw) if not math.isnan(left_base) else float('nan')
+        right_drop = (right_base - self.right_range_raw) if not math.isnan(right_base) else float('nan')
         self.get_logger().info(
             f"BoxDetect: L_cnt={self.left_detect_counter}/{self.tof_confirm_frames} "
             f"R_cnt={self.right_detect_counter}/{self.tof_confirm_frames} "
