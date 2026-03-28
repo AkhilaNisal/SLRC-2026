@@ -362,7 +362,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('same_box_ignore_distance', 0.35)
 
         # box detection by side-sensor variation pattern (relative valley detection)
-        self.declare_parameter('show_debug_windows', True)
+        self.declare_parameter('show_debug_windows', False-)
         self.declare_parameter('side_history_length', 220)
         self.declare_parameter('side_variation_fast_alpha', 0.35)
         self.declare_parameter('side_variation_baseline_alpha', 0.03)
