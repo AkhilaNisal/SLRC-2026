@@ -120,7 +120,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # distance) and rejects single-frame spikes because the baseline is a median.
         # =========================
         self.declare_parameter('tof_delta_threshold', 0.05)   # 5 cm drop from baseline → box
-        self.declare_parameter('tof_baseline_window', 20)     # frames kept for rolling median
+        self.declare_parameter('tof_baseline_window', 60)     # frames kept for rolling median (~3 s at 20 Hz)
         self.declare_parameter('tof_confirm_frames', 3)       # consecutive delta-hits to confirm
 
         # ignore box search at first line-follow start
