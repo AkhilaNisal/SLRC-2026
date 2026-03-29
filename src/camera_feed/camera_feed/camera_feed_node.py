@@ -2,6 +2,7 @@ import cv2
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
@@ -25,7 +26,7 @@ class CameraFeedNode(Node):
         self.fps = self.get_parameter('fps').value
         self.image_topic = self.get_parameter('image_topic').value
 
-        self.image_pub = self.create_publisher(Image, self.image_topic, 10)
+        self.image_pub = self.create_publisher(Image, self.image_topic, qos_profile_sensor_data)
 
         self.cap = cv2.VideoCapture(self.camera_index)
 
@@ -37,9 +38,10 @@ class CameraFeedNode(Node):
             )
             self.cap = None
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-        self.cap.set(cv2.CAP_PROP_FPS, self.fps)
+        if self.cap is not None:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
+            self.cap.set(cv2.CAP_PROP_FPS, self.fps)
 
         timer_period = 1.0 / self.fps
         self.timer = self.create_timer(timer_period, self.publish_frame)

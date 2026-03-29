@@ -85,8 +85,8 @@ class Task1MazeNode(Node):
         # =========================
         # Wall control gains
         # =========================
-        self.declare_parameter('center_kp', 2.2)
-        self.declare_parameter('center_kd', 1.5)
+        self.declare_parameter('center_kp', 3.5)
+        self.declare_parameter('center_kd', 2.2)
 
         # =========================
         # Gyro heading-hold gains
@@ -151,6 +151,15 @@ class Task1MazeNode(Node):
         # Cell counting
         # =========================
         self.declare_parameter('cell_length_m', 0.40)
+
+        # =========================
+        # Maze memory
+        # =========================
+        self.declare_parameter('maze_rows', 3)
+        self.declare_parameter('maze_cols', 6)
+        self.declare_parameter('start_row', 0)
+        self.declare_parameter('start_col', 0)
+        self.declare_parameter('start_facing', 'E')  # E, N, W, S
 
         # =========================
         # Debug
@@ -255,6 +264,12 @@ class Task1MazeNode(Node):
 
         self.cell_length_m = float(self.get_parameter('cell_length_m').value)
 
+        self.maze_rows = int(self.get_parameter('maze_rows').value)
+        self.maze_cols = int(self.get_parameter('maze_cols').value)
+        self.start_row = int(self.get_parameter('start_row').value)
+        self.start_col = int(self.get_parameter('start_col').value)
+        self.start_facing = str(self.get_parameter('start_facing').value)
+
         self.debug_logs = bool(self.get_parameter('debug_logs').value)
         self.debug_every_n_cycles = int(self.get_parameter('debug_every_n_cycles').value)
 
@@ -352,6 +367,14 @@ class Task1MazeNode(Node):
         # Cell counting state
         self.cell_count = 0
         self.segment_cells_counted = 0
+
+        # Maze memory state
+        self.robot_row = self.start_row
+        self.robot_col = self.start_col
+        self.visited = {(self.robot_row, self.robot_col)}
+        self.initial_gyro_deg = None
+        _facing_offsets = {'E': 0.0, 'N': -90.0, 'W': -180.0, 'S': 90.0}
+        self.maze_heading_offset = _facing_offsets.get(self.start_facing, 0.0)
 
         # AprilTag detection state
         self.seen_tag_ids: set = set()
@@ -521,6 +544,9 @@ class Task1MazeNode(Node):
             self.cell_count += new_cells
             self.publish_cell_count()
 
+            for _ in range(new_cells):
+                self.advance_maze_position()
+
             self.get_logger().info(
                 f'[CELL_COUNT] total_cells={self.cell_count} '
                 f'segment_cells={self.segment_cells_counted} '
@@ -637,6 +663,64 @@ class Task1MazeNode(Node):
 
     def both_ready_for_decision(self):
         return self.left_ready_for_decision() and self.right_ready_for_decision()
+
+    # ============================================================
+    # Maze memory
+    # ============================================================
+    def snap_cardinal(self):
+        """Current grid heading snapped to 0/90/-90/180 (E/N/S/W)."""
+        if self.current_yaw_deg is None or self.initial_gyro_deg is None:
+            return None
+        rel = self.wrap_angle_deg(
+            self.current_yaw_deg - self.initial_gyro_deg + self.maze_heading_offset
+        )
+        return self.wrap_angle_deg(round(rel / 90.0) * 90.0)
+
+    def cardinal_to_delta(self, cardinal):
+        if cardinal is None:
+            return (0, 0)
+        c = round(cardinal)
+        if c == 0:    return (0, 1)    # East  +col
+        if c == 90:   return (-1, 0)   # North -row
+        if c == -90:  return (1, 0)    # South +row
+        return (0, -1)                  # West  -col
+
+    def advance_maze_position(self):
+        cardinal = self.snap_cardinal()
+        dr, dc = self.cardinal_to_delta(cardinal)
+        nr, nc = self.robot_row + dr, self.robot_col + dc
+        if 0 <= nr < self.maze_rows and 0 <= nc < self.maze_cols:
+            self.robot_row = nr
+            self.robot_col = nc
+        self.visited.add((self.robot_row, self.robot_col))
+        self.get_logger().info(
+            f'[MAZE] pos=({self.robot_row},{self.robot_col}) heading={cardinal} '
+            f'visited={len(self.visited)}/{self.maze_rows * self.maze_cols}'
+        )
+
+    def neighbor_cell(self, turn_dir):
+        """Return (row, col) the robot would enter after the given turn."""
+        cardinal = self.snap_cardinal()
+        if cardinal is None:
+            return None
+        if turn_dir == TurnDir.LEFT:
+            new_h = self.wrap_angle_deg(cardinal + 90.0)
+        elif turn_dir == TurnDir.RIGHT:
+            new_h = self.wrap_angle_deg(cardinal - 90.0)
+        elif turn_dir == TurnDir.BACK:
+            new_h = self.wrap_angle_deg(cardinal + 180.0)
+        else:
+            return None
+        dr, dc = self.cardinal_to_delta(new_h)
+        return (self.robot_row + dr, self.robot_col + dc)
+
+    def is_visited_or_oob(self, cell):
+        if cell is None:
+            return True
+        r, c = cell
+        if not (0 <= r < self.maze_rows and 0 <= c < self.maze_cols):
+            return True
+        return (r, c) in self.visited
 
     # ============================================================
     # Wall presence
@@ -796,6 +880,10 @@ class Task1MazeNode(Node):
 
         if self.target_yaw_deg is None:
             self.target_yaw_deg = yaw_deg
+
+        if self.initial_gyro_deg is None:
+            self.initial_gyro_deg = yaw_deg
+            self.get_logger().info(f'[MAZE] Initial gyro captured: {yaw_deg:.1f} deg')
 
     # ============================================================
     # Speed control
@@ -1097,6 +1185,25 @@ class Task1MazeNode(Node):
             f'right_raw={self.fmt(self.last_right_raw)} right={self.fmt(self.right_range)} right_valid={self.right_valid} right_samples={self.right_decision_samples} right_open={right_open}'
         )
 
+        if left_open and right_open:
+            left_cell = self.neighbor_cell(TurnDir.LEFT)
+            right_cell = self.neighbor_cell(TurnDir.RIGHT)
+            lv = self.is_visited_or_oob(left_cell)
+            rv = self.is_visited_or_oob(right_cell)
+
+            if lv and not rv:
+                choice = TurnDir.RIGHT
+            elif rv and not lv:
+                choice = TurnDir.LEFT
+            else:
+                choice = TurnDir.LEFT if self.prefer_left_first else TurnDir.RIGHT
+
+            self.get_logger().info(
+                f'Front blocked, both open | L={self.left_range:.3f} vis={lv}, '
+                f'R={self.right_range:.3f} vis={rv} -> {choice.value}'
+            )
+            return choice
+
         if left_open and not right_open:
             self.get_logger().info(f'Front blocked, left open ({self.left_range:.3f}) -> LEFT')
             return TurnDir.LEFT
@@ -1104,13 +1211,6 @@ class Task1MazeNode(Node):
         if right_open and not left_open:
             self.get_logger().info(f'Front blocked, right open ({self.right_range:.3f}) -> RIGHT')
             return TurnDir.RIGHT
-
-        if left_open and right_open:
-            choice = TurnDir.LEFT if self.prefer_left_first else TurnDir.RIGHT
-            self.get_logger().info(
-                f'Front blocked, both open | L={self.left_range:.3f}, R={self.right_range:.3f} -> {choice.value}'
-            )
-            return choice
 
         left_txt = f'{self.left_range:.3f}' if self.left_range is not None else 'None'
         right_txt = f'{self.right_range:.3f}' if self.right_range is not None else 'None'
