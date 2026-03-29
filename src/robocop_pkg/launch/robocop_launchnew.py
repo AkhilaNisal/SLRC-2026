@@ -154,15 +154,28 @@ def generate_launch_description():
     }]
     )
 
+    apriltag_decoder_node = Node(
+        package='apriltag_decoder',
+        executable='apriltag_decoder_node',
+        name='apriltag_decoder_node',
+        output='screen',
+        parameters=[{
+            'required_unique_tags': 8,
+            'families': 'tagStandard52h13',
+            'publish_on_each_detection': True,
+            'publish_debug_image': True,
+        }]
+    )
+
     delayed_task_nodes = TimerAction(
         period=8.0,
         actions=[
             robot_arm_action_server,
             # robot_arm_centering_action_server,
             # task3,
-            task2_with_arm,
+            # task2_with_arm,
             # task_manager,
-            # task1,
+            task1,
 
 
         ]
@@ -177,5 +190,6 @@ def generate_launch_description():
         camera_feed_node,
         tof_node,
         cmd_vel_stepper_node,
+        # apriltag_decoder_node,
         delayed_task_nodes,
     ])

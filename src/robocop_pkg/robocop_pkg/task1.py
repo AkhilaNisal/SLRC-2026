@@ -17,6 +17,8 @@ class NavState(Enum):
     REFRESH_FOR_DECISION = 1
     STOP_AND_DECIDE = 2
     TURNING = 3
+    RETURN_TO_JUNCTION = 4
+    ENTER_LEFT_JUNCTION = 5
 
 
 class TurnDir(Enum):
@@ -71,7 +73,7 @@ class Task1MazeNode(Node):
         # =========================
         self.declare_parameter('wall_detect_distance', 0.30)
         self.declare_parameter('wall_clear_distance', 0.35)
-        self.declare_parameter('turn_open_distance', 0.34)
+        self.declare_parameter('turn_open_distance', 0.28)
         self.declare_parameter('min_valid_range', 0.04)
         self.declare_parameter('max_valid_range', 16.0)
         self.declare_parameter('wall_loss_confirm_cycles', 5)
@@ -192,6 +194,12 @@ class Task1MazeNode(Node):
         self.declare_parameter('prefer_left_first', True)
 
         # =========================
+        # Enter junction before left turn
+        # =========================
+        self.declare_parameter('left_entry_distance_m', 0.20)
+        self.declare_parameter('left_entry_speed', 0.06)
+
+        # =========================
         # Read params
         # =========================
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
@@ -298,6 +306,9 @@ class Task1MazeNode(Node):
         self.junction_cooldown_sec = float(self.get_parameter('junction_cooldown_sec').value)
         self.prefer_left_first = bool(self.get_parameter('prefer_left_first').value)
 
+        self.left_entry_distance_m = float(self.get_parameter('left_entry_distance_m').value)
+        self.left_entry_speed = float(self.get_parameter('left_entry_speed').value)
+
         # =========================
         # State
         # =========================
@@ -374,6 +385,19 @@ class Task1MazeNode(Node):
         self.cell_count = 0
         self.segment_cells_counted = 0
 
+        self.return_after_back_turn = False
+        self.return_distance_target_m = 0.0
+        self.return_stop_margin_m = 0.05
+
+        self.last_junction_heading_deg = None
+        self.last_junction_front_open = False
+        self.last_junction_left_open = False
+        self.last_junction_right_open = False
+        self.last_junction_exit_heading_deg = None
+
+        self.left_entry_target_distance_m = 0.0
+        self.left_entry_start_distance_m = 0.0
+
         # ROS
         self.left_sub = self.create_subscription(
             Range, self.left_range_topic, self.left_cb, qos_profile_sensor_data
@@ -405,9 +429,6 @@ class Task1MazeNode(Node):
             f'right={self.right_range_topic}, gyro={self.gyro_angle_topic}'
         )
 
-    # ============================================================
-    # Helpers
-    # ============================================================
     @staticmethod
     def clamp(x, lo, hi):
         return max(lo, min(hi, x))
@@ -430,13 +451,6 @@ class Task1MazeNode(Node):
             not math.isinf(x) and
             self.min_valid_range <= x <= self.max_valid_range
         )
-
-    def filtered_update(self, old_val, new_val, alpha, max_jump):
-        if old_val is None:
-            return new_val
-        if abs(new_val - old_val) > max_jump:
-            return old_val
-        return alpha * new_val + (1.0 - alpha) * old_val
 
     def ema_update(self, old_val, new_val, alpha):
         if old_val is None:
@@ -505,6 +519,100 @@ class Task1MazeNode(Node):
         if reason:
             self.debug_print(f'[HEADING_CAPTURE] reason={reason} yaw={self.current_yaw_deg:.2f}')
 
+    def heading_for_turn(self, base_heading_deg, turn_dir: TurnDir):
+        if turn_dir == TurnDir.LEFT:
+            return self.wrap_angle_deg(base_heading_deg + 90.0)
+        if turn_dir == TurnDir.RIGHT:
+            return self.wrap_angle_deg(base_heading_deg - 90.0)
+        if turn_dir == TurnDir.BACK:
+            return self.wrap_angle_deg(base_heading_deg + 180.0)
+        return self.wrap_angle_deg(base_heading_deg)
+
+    def remember_junction(self, front_open: bool, left_open: bool, right_open: bool, chosen_dir: TurnDir):
+        if not self.gyro_is_fresh() or self.current_yaw_deg is None:
+            return
+
+        base = self.current_yaw_deg
+        self.last_junction_heading_deg = base
+        self.last_junction_front_open = front_open
+        self.last_junction_left_open = left_open
+        self.last_junction_right_open = right_open
+        self.last_junction_exit_heading_deg = self.heading_for_turn(base, chosen_dir)
+
+    def choose_return_target_heading(self):
+        if self.last_junction_heading_deg is None or self.last_junction_exit_heading_deg is None:
+            return None
+
+        base = self.last_junction_heading_deg
+        came_from_branch = self.last_junction_exit_heading_deg
+        incoming_heading = self.wrap_angle_deg(base + 180.0)
+
+        candidates = []
+        if self.last_junction_left_open:
+            candidates.append(('LEFT', self.wrap_angle_deg(base + 90.0)))
+        if self.last_junction_front_open:
+            candidates.append(('FRONT', self.wrap_angle_deg(base)))
+        if self.last_junction_right_open:
+            candidates.append(('RIGHT', self.wrap_angle_deg(base - 90.0)))
+
+        candidates = [
+            (name, hdg) for name, hdg in candidates
+            if abs(self.angle_error_deg(came_from_branch, hdg)) > 20.0
+        ]
+
+        if not candidates:
+            candidates = [('IN', incoming_heading)]
+
+        order = ['LEFT', 'FRONT', 'RIGHT', 'IN'] if self.prefer_left_first else ['RIGHT', 'FRONT', 'LEFT', 'IN']
+        candidates.sort(key=lambda item: order.index(item[0]))
+        return candidates[0][1]
+
+    def heading_to_turn_dir(self, target_heading_deg):
+        if not self.gyro_is_fresh() or self.current_yaw_deg is None or target_heading_deg is None:
+            return TurnDir.NONE
+
+        err = self.angle_error_deg(target_heading_deg, self.current_yaw_deg)
+
+        if abs(err) <= self.turn_tolerance_deg:
+            return TurnDir.NONE
+        if 45.0 <= err <= 135.0:
+            return TurnDir.LEFT
+        if -135.0 <= err <= -45.0:
+            return TurnDir.RIGHT
+        return TurnDir.BACK
+
+    def side_open_from_value(self, value):
+        return (
+            value is not None and
+            self.is_valid_measurement(value) and
+            value > self.turn_open_distance
+        )
+
+    def left_open_for_turn(self):
+        if self.side_open_from_value(self.last_left_raw):
+            return True
+        return (
+            self.left_valid and
+            self.left_range is not None and
+            self.left_range > self.turn_open_distance
+        )
+
+    def right_open_for_turn(self):
+        if self.side_open_from_value(self.last_right_raw):
+            return True
+        return (
+            self.right_valid and
+            self.right_range is not None and
+            self.right_range > self.turn_open_distance
+        )
+
+    def front_open_for_turn(self):
+        return (
+            self.front_valid and
+            self.front_range is not None and
+            self.front_range > (self.front_stop_distance + self.front_stop_hysteresis)
+        )
+
     def distance_since_reset_cb(self, msg: Float32):
         self.distance_since_reset_m = float(msg.data)
 
@@ -553,19 +661,18 @@ class Task1MazeNode(Node):
     def count_block_or_dead_end_event(self, left_open: bool, right_open: bool):
         if not self.pending_block_event:
             return
+
         if not self.can_count_new_event():
             self.pending_block_event = False
             return
+
         if left_open or right_open:
             if self.count_blocked_junctions:
                 self.junction_count += 1
                 self.blocked_junction_count += 1
                 self.publish_counts()
-        else:
-            if self.count_dead_ends:
-                self.dead_end_count += 1
-                self.publish_counts()
-        self.reset_distance_segment()
+            self.reset_distance_segment()
+
         self.pending_block_event = False
 
     def begin_refresh_for_decision(self):
@@ -603,9 +710,6 @@ class Task1MazeNode(Node):
     def both_ready_for_decision(self):
         return self.left_ready_for_decision() and self.right_ready_for_decision()
 
-    # ============================================================
-    # Wall presence
-    # ============================================================
     def update_wall_presence(self):
         if self.left_valid:
             if self.left_wall_present:
@@ -635,9 +739,6 @@ class Task1MazeNode(Node):
                     self.right_wall_present = True
                     self.right_loss_counter = 0
 
-    # ============================================================
-    # Edge lock recovery
-    # ============================================================
     def handle_left_locked(self, raw_r):
         candidate_close = raw_r < self.edge_reacquire_distance
         candidate_jump_ok = (self.left_range is None) or (abs(raw_r - self.left_range) < self.edge_reacquire_jump)
@@ -672,9 +773,6 @@ class Task1MazeNode(Node):
             self.right_wall_present = raw_r < self.wall_detect_distance
             self.debug_print(f'[RIGHT_UNLOCK] reacquired raw={raw_r:.3f}')
 
-    # ============================================================
-    # Sensor callbacks
-    # ============================================================
     def left_cb(self, msg: Range):
         r = float(msg.range)
         self.last_left_raw = r
@@ -716,11 +814,11 @@ class Task1MazeNode(Node):
         r = float(msg.range)
         self.last_front_raw = r
 
-        if self.is_valid_measurement(r):
-            self.front_range = self.filtered_update(
-                self.front_range, r, self.front_filter_alpha, self.max_front_jump
-            )
-            self.front_valid = True
+        if not self.is_valid_measurement(r):
+            return
+
+        self.front_range = r
+        self.front_valid = True
 
     def right_cb(self, msg: Range):
         r = float(msg.range)
@@ -769,9 +867,6 @@ class Task1MazeNode(Node):
         if self.target_yaw_deg is None:
             self.capture_heading_reference('gyro_init')
 
-    # ============================================================
-    # Speed control
-    # ============================================================
     def compute_forward_speed(self, mode):
         if not self.front_valid or self.front_range is None:
             if mode in ['GYRO_ONLY', 'OPEN_LOOP']:
@@ -807,9 +902,6 @@ class Task1MazeNode(Node):
 
         return mode_cap
 
-    # ============================================================
-    # Heading-hold fusion
-    # ============================================================
     def maybe_update_target_heading(self, mode):
         if not self.use_gyro_fuse_linear:
             return
@@ -850,9 +942,6 @@ class Task1MazeNode(Node):
 
         return heading_term
 
-    # ============================================================
-    # Feed-forward
-    # ============================================================
     def reset_ff_trackers(self):
         self.left_toward_wall_count = 0
         self.right_toward_wall_count = 0
@@ -969,9 +1058,6 @@ class Task1MazeNode(Node):
 
         return 0.0
 
-    # ============================================================
-    # Wall steering
-    # ============================================================
     def compute_wall_term(self):
         left_ready = (
             self.left_valid and
@@ -1038,9 +1124,6 @@ class Task1MazeNode(Node):
         self.last_stable_angular = 0.90 * self.last_stable_angular
         return 0.0
 
-    # ============================================================
-    # Turning
-    # ============================================================
     def begin_turn(self, turn_dir: TurnDir):
         if not self.gyro_is_fresh() or self.current_yaw_deg is None:
             self.get_logger().warn('Cannot begin turn: gyro not fresh')
@@ -1086,14 +1169,23 @@ class Task1MazeNode(Node):
 
         if self.turn_settle_counter >= self.turn_settle_cycles:
             self.stop_cmd()
-            self.nav_state = NavState.FOLLOW
+
+            next_state = NavState.RETURN_TO_JUNCTION if self.return_after_back_turn else NavState.FOLLOW
+            self.return_after_back_turn = False
+
+            self.nav_state = next_state
             self.turn_direction = TurnDir.NONE
             self.turn_target_yaw_deg = None
             self.prev_angular_cmd = 0.0
             self.last_junction_time = self.now_sec()
-            self.post_turn_forward_cycles = max(
-                1, int(self.post_turn_forward_time_sec * self.control_rate_hz)
-            )
+
+            if next_state == NavState.FOLLOW:
+                self.post_turn_forward_cycles = max(
+                    1, int(self.post_turn_forward_time_sec * self.control_rate_hz)
+                )
+            else:
+                self.post_turn_forward_cycles = 0
+
             self.capture_heading_reference('turn_complete')
             self.reset_ff_trackers()
             return
@@ -1106,31 +1198,75 @@ class Task1MazeNode(Node):
         twist.angular.z = ang_mag if err > 0.0 else -ang_mag
         self.cmd_pub.publish(twist)
 
-    # ============================================================
-    # Decision logic
-    # ============================================================
+    def begin_left_entry(self):
+        self.left_entry_start_distance_m = self.distance_since_reset_m
+        self.left_entry_target_distance_m = self.distance_since_reset_m + self.left_entry_distance_m
+        self.nav_state = NavState.ENTER_LEFT_JUNCTION
+        self.debug_print(
+            f'[LEFT_ENTRY_START] start={self.left_entry_start_distance_m:.3f} '
+            f'target={self.left_entry_target_distance_m:.3f}'
+        )
+
+    def execute_left_entry(self):
+        if self.front_valid and self.front_range is not None:
+            if self.front_range <= (self.front_stop_distance + self.front_stop_hysteresis):
+                self.stop_cmd()
+                self.begin_turn(TurnDir.LEFT)
+                return
+
+        if self.distance_since_reset_m >= self.left_entry_target_distance_m:
+            self.stop_cmd()
+            self.begin_turn(TurnDir.LEFT)
+            return
+
+        twist = Twist()
+        twist.linear.x = self.left_entry_speed
+        twist.angular.z = 0.0
+        self.cmd_pub.publish(twist)
+
+    def choose_turn_left_priority(self, front_open: bool, left_open: bool, right_open: bool):
+        if left_open:
+            return TurnDir.LEFT
+        if front_open:
+            return TurnDir.NONE
+        if right_open:
+            return TurnDir.RIGHT
+        return TurnDir.BACK
+
     def choose_turn_when_front_blocked(self):
-        left_open = self.left_valid and self.left_range is not None and self.left_range > self.turn_open_distance
-        right_open = self.right_valid and self.right_range is not None and self.right_range > self.turn_open_distance
+        left_open = self.left_open_for_turn()
+        right_open = self.right_open_for_turn()
+        front_open = self.front_open_for_turn()
+
+        decision = self.choose_turn_left_priority(front_open, left_open, right_open)
+
+        if decision == TurnDir.BACK:
+            return TurnDir.BACK, left_open, right_open
 
         self.count_block_or_dead_end_event(left_open, right_open)
-
-        if left_open and not right_open:
-            return TurnDir.LEFT
-        if right_open and not left_open:
-            return TurnDir.RIGHT
-        if left_open and right_open:
-            return TurnDir.LEFT if self.prefer_left_first else TurnDir.RIGHT
-        return TurnDir.BACK
+        return decision, left_open, right_open
 
     def refresh_for_decision_step(self):
         self.stop_cmd()
         if self.both_ready_for_decision():
             self.nav_state = NavState.STOP_AND_DECIDE
 
-    # ============================================================
-    # Follow controller
-    # ============================================================
+    def start_dead_end_return(self):
+        target = max(0.0, self.distance_since_reset_m)
+
+        if not self.begin_turn(TurnDir.BACK):
+            return False
+
+        if self.count_dead_ends:
+            self.dead_end_count += 1
+            self.publish_counts()
+
+        self.return_distance_target_m = target
+        self.return_after_back_turn = True
+        self.pending_block_event = False
+        self.reset_distance_segment()
+        return True
+
     def follow_motion(self):
         twist = Twist()
 
@@ -1152,8 +1288,8 @@ class Task1MazeNode(Node):
 
         self.debug_periodic(
             f'[FOLLOW_CTRL] mode={self.mode} '
-            f'L={self.fmt(self.left_range)} Lc={self.fmt(self.corrected_left())} lockL={self.left_edge_locked} reacqL={self.left_reacquire_counter} '
-            f'R={self.fmt(self.right_range)} Rc={self.fmt(self.corrected_right())} lockR={self.right_edge_locked} reacqR={self.right_reacquire_counter} '
+            f'L={self.fmt(self.left_range)} Lraw={self.fmt(self.last_left_raw)} lockL={self.left_edge_locked} '
+            f'R={self.fmt(self.right_range)} Rraw={self.fmt(self.last_right_raw)} lockR={self.right_edge_locked} '
             f'wall={wall_term:.3f} head={heading_term:.3f} ff={ff_term:.3f} raw={raw_ang:.3f} '
             f'yaw={self.fmt(self.current_yaw_deg)} target={self.fmt(self.target_yaw_deg)}'
         )
@@ -1190,9 +1326,6 @@ class Task1MazeNode(Node):
         self.cmd_pub.publish(twist)
         return False
 
-    # ============================================================
-    # Control loop
-    # ============================================================
     def recent_junction_block(self):
         if self.last_junction_time is None:
             return False
@@ -1210,28 +1343,119 @@ class Task1MazeNode(Node):
             self.execute_turn()
             return
 
+        if self.nav_state == NavState.ENTER_LEFT_JUNCTION:
+            self.execute_left_entry()
+            return
+
+        if self.nav_state == NavState.RETURN_TO_JUNCTION:
+            stopped = self.follow_motion()
+
+            if self.distance_since_reset_m >= max(0.0, self.return_distance_target_m - self.return_stop_margin_m):
+                self.stop_cmd()
+                target_heading = self.choose_return_target_heading()
+
+                if target_heading is None:
+                    self.nav_state = NavState.FOLLOW
+                    self.reset_distance_segment()
+                    self.capture_heading_reference('return_no_memory')
+                    return
+
+                self.last_junction_exit_heading_deg = target_heading
+                turn_dir = self.heading_to_turn_dir(target_heading)
+
+                self.reset_distance_segment()
+
+                if turn_dir == TurnDir.NONE:
+                    self.nav_state = NavState.FOLLOW
+                    self.capture_heading_reference('return_straight')
+                else:
+                    self.begin_turn(turn_dir)
+                return
+
+            if stopped:
+                self.stop_cmd()
+            return
+
         if self.nav_state == NavState.REFRESH_FOR_DECISION:
             self.refresh_for_decision_step()
             return
 
         if self.nav_state == NavState.STOP_AND_DECIDE:
             self.stop_cmd()
-            decision = self.choose_turn_when_front_blocked()
-            self.begin_turn(decision)
+            decision, left_open, right_open = self.choose_turn_when_front_blocked()
+
+            if decision == TurnDir.BACK:
+                self.start_dead_end_return()
+            elif decision == TurnDir.NONE:
+                self.nav_state = NavState.FOLLOW
+                self.capture_heading_reference('decision_go_straight')
+                self.last_junction_time = self.now_sec()
+            elif decision == TurnDir.LEFT:
+                self.remember_junction(False, left_open, right_open, TurnDir.LEFT)
+                self.left_edge_locked = False
+                self.right_edge_locked = False
+                self.left_reacquire_counter = 0
+                self.right_reacquire_counter = 0
+                self.begin_left_entry()
+            else:
+                self.remember_junction(False, left_open, right_open, decision)
+                self.left_edge_locked = False
+                self.right_edge_locked = False
+                self.left_reacquire_counter = 0
+                self.right_reacquire_counter = 0
+                self.begin_turn(decision)
             return
 
         self.update_wall_presence()
 
-        left_open = self.left_valid and self.left_range is not None and self.left_range > self.turn_open_distance
-        right_open = self.right_valid and self.right_range is not None and self.right_range > self.turn_open_distance
-        front_open = (
-            self.front_valid and self.front_range is not None and
-            self.front_range > (self.front_stop_distance + self.front_stop_hysteresis)
-        )
+        left_open = self.left_open_for_turn()
+        right_open = self.right_open_for_turn()
+        front_open = self.front_open_for_turn()
 
-        if front_open and (left_open or right_open) and not self.recent_junction_block():
-            self.count_pass_junction_event(left_open, right_open)
-            self.last_junction_time = self.now_sec()
+        if not self.recent_junction_block():
+            decision = self.choose_turn_left_priority(front_open, left_open, right_open)
+
+            if decision == TurnDir.LEFT:
+                if self.count_pass_junctions and self.can_count_new_event():
+                    self.count_pass_junction_event(left_open, right_open)
+
+                self.remember_junction(front_open, left_open, right_open, TurnDir.LEFT)
+
+                self.left_edge_locked = False
+                self.right_edge_locked = False
+                self.left_reacquire_counter = 0
+                self.right_reacquire_counter = 0
+
+                self.last_junction_time = self.now_sec()
+                self.begin_left_entry()
+                return
+
+            if decision == TurnDir.RIGHT and not front_open:
+                if self.count_blocked_junctions and self.can_count_new_event():
+                    self.junction_count += 1
+                    self.blocked_junction_count += 1
+                    self.publish_counts()
+                    self.reset_distance_segment()
+
+                self.remember_junction(front_open, left_open, right_open, TurnDir.RIGHT)
+
+                self.left_edge_locked = False
+                self.right_edge_locked = False
+                self.left_reacquire_counter = 0
+                self.right_reacquire_counter = 0
+
+                self.begin_turn(TurnDir.RIGHT)
+                self.last_junction_time = self.now_sec()
+                return
+
+            if decision == TurnDir.BACK and not front_open:
+                stopped = self.follow_motion()
+                if stopped:
+                    self.begin_refresh_for_decision()
+                return
+
+            if front_open and (left_open or right_open):
+                self.last_junction_time = self.now_sec()
 
         stopped = self.follow_motion()
 
