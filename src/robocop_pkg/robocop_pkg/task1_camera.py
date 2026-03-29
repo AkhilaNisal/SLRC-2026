@@ -695,7 +695,9 @@ class Task1CameraNode(Node):
         if self.current_gyro_deg is not None and self.turn_gyro_start_deg is not None:
             gyro_delta = abs(self._wrap_deg(self.current_gyro_deg - self.turn_gyro_start_deg))
             remaining = target_deg - gyro_delta
-            if remaining <= self.turn_tolerance_deg:
+            # guard: don't accept stop until at least half the turn is measured,
+            # so stale gyro readings from prior motion can't cause a false finish
+            if gyro_delta >= (target_deg * 0.5) and remaining <= self.turn_tolerance_deg:
                 self._finish_turn('gyro')
                 return
             spd = self.turn_angular_speed
