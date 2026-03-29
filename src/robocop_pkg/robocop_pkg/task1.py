@@ -360,6 +360,7 @@ class Task1MazeNode(Node):
         self.turn_settle_counter = 0
         self.post_turn_forward_cycles = 0
         self.last_junction_time = None
+        self._back_turn_leg2_pending = False
 
         # decision refresh accumulators
         self.left_decision_range = None
@@ -895,9 +896,15 @@ class Task1MazeNode(Node):
             self.get_logger().warn('Cannot begin turn: gyro not fresh')
             return False
 
-        delta = {TurnDir.LEFT: 90.0, TurnDir.RIGHT: -90.0, TurnDir.BACK: 180.0}.get(turn_dir)
-        if delta is None:
-            return False
+        # For BACK (180°), split into two 90° legs to avoid ±180 wrap ambiguity
+        if turn_dir == TurnDir.BACK:
+            self._back_turn_leg2_pending = True
+            delta = 90.0  # first leg: always turn left 90°
+        else:
+            self._back_turn_leg2_pending = False
+            delta = {TurnDir.LEFT: 90.0, TurnDir.RIGHT: -90.0}.get(turn_dir)
+            if delta is None:
+                return False
 
         self.turn_direction = turn_dir
         self.turn_target_yaw_deg = self._wrap_deg(self.current_yaw_deg + delta)
@@ -907,8 +914,9 @@ class Task1MazeNode(Node):
         self.prev_heading_error = 0.0
         self.prev_angular_cmd = 0.0
 
+        label = f'{turn_dir.value}' + (' (leg 1/2)' if self._back_turn_leg2_pending else '')
         self.get_logger().info(
-            f'Begin turn {turn_dir.value} | current={self.current_yaw_deg:.1f} '
+            f'Begin turn {label} | current={self.current_yaw_deg:.1f} '
             f'target={self.turn_target_yaw_deg:.1f}')
         return True
 
@@ -928,6 +936,20 @@ class Task1MazeNode(Node):
             self.turn_settle_counter = 0
 
         if self.turn_settle_counter >= self.turn_settle_cycles:
+            # If this was the first leg of a BACK turn, start the second 90°
+            if self._back_turn_leg2_pending:
+                self._back_turn_leg2_pending = False
+                second_target = self._wrap_deg(self.current_yaw_deg + 90.0)
+                self.turn_target_yaw_deg = second_target
+                self.target_yaw_deg = second_target
+                self.turn_settle_counter = 0
+                self.prev_heading_error = 0.0
+                self.prev_angular_cmd = 0.0
+                self.get_logger().info(
+                    f'BACK leg 2 | current={self.current_yaw_deg:.1f} '
+                    f'target={second_target:.1f}')
+                return
+
             self._stop()
             self.nav_state = NavState.FOLLOW
             self.turn_direction = TurnDir.NONE

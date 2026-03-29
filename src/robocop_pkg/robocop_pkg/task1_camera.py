@@ -29,10 +29,11 @@ from std_msgs.msg import Empty, Float32, Int32, Int64, String
 
 class NavState(Enum):
     FOLLOW = 0
-    STOP_AND_DECIDE = 1
-    TURNING = 2
-    TAG_BLINK = 3
-    POST_TURN = 4
+    CREEP_TO_JUNCTION = 1
+    STOP_AND_DECIDE = 2
+    TURNING = 3
+    TAG_BLINK = 4
+    POST_TURN = 5
 
 
 class TurnDir(Enum):
@@ -134,6 +135,12 @@ class Task1CameraNode(Node):
         self.declare_parameter('encoder_microsteps', 16)
         self.declare_parameter('imu_fusion_alpha', 0.05)
 
+        # ── camera-to-axle offset ────────────────────────────────
+        # distance the robot must creep forward after a visual
+        # detection so the wheel axle lines up with the junction
+        self.declare_parameter('camera_axle_offset_m', 0.12)
+        self.declare_parameter('creep_speed', 0.05)
+
         # ── turn controller ─────────────────────────────────────
         self.declare_parameter('turn_angular_speed', 0.45)
         self.declare_parameter('turn_slow_angular_speed', 0.22)
@@ -143,6 +150,8 @@ class Task1CameraNode(Node):
         self.declare_parameter('post_turn_forward_sec', 0.50)
         self.declare_parameter('junction_cooldown_sec', 0.80)
         self.declare_parameter('prefer_left_first', True)
+        # encoder-based turn angle limit (fallback if gyro stale)
+        self.declare_parameter('turn_max_encoder_deg', 110.0)
 
         # ── output shaping ──────────────────────────────────────
         self.declare_parameter('max_angular', 0.8)
@@ -241,6 +250,10 @@ class Task1CameraNode(Node):
         self.enc_meters_per_step = (2.0 * math.pi * enc_r) / (enc_spr * enc_us)
         self.imu_fusion_alpha = float(g('imu_fusion_alpha').value)
 
+        # camera-axle offset
+        self.camera_axle_offset_m = float(g('camera_axle_offset_m').value)
+        self.creep_speed = float(g('creep_speed').value)
+
         # turn
         self.turn_angular_speed = float(g('turn_angular_speed').value)
         self.turn_slow_angular_speed = float(g('turn_slow_angular_speed').value)
@@ -250,6 +263,7 @@ class Task1CameraNode(Node):
         self.post_turn_forward_sec = float(g('post_turn_forward_sec').value)
         self.junction_cooldown_sec = float(g('junction_cooldown_sec').value)
         self.prefer_left_first = bool(g('prefer_left_first').value)
+        self.turn_max_encoder_deg = float(g('turn_max_encoder_deg').value)
 
         # output
         self.max_angular = float(g('max_angular').value)
@@ -321,6 +335,17 @@ class Task1CameraNode(Node):
         self.post_turn_cycles = 0
         self.post_turn_total_cycles = 0
         self.last_junction_time = None
+
+        # creep-to-junction state (camera-axle offset)
+        self.creep_start_distance = 0.0
+        # snapshot of side-open flags at creep entry
+        self.creep_left_open = False
+        self.creep_right_open = False
+
+        # encoder-based turn tracking
+        self.turn_start_left_steps = None
+        self.turn_start_right_steps = None
+        self.turn_start_yaw_deg = None
 
         # junction / cell counting
         self.distance_since_reset_m = 0.0
@@ -659,12 +684,41 @@ class Task1CameraNode(Node):
         t = self._clamp((r - lo) / max(1e-6, hi - lo), 0.0, 1.0)
         return self.slow_forward_speed + t * (self.max_forward_speed - self.slow_forward_speed)
 
+    # ── camera-to-axle offset (creep) ────────────────────────────
+
+    def _begin_creep(self):
+        """Start creeping forward so the wheel axle reaches the junction."""
+        self.creep_start_distance = self.distance_since_reset_m
+        # snapshot current side-open states so we remember what was seen
+        self.creep_left_open = self.visually_left_open
+        self.creep_right_open = self.visually_right_open
+        self.nav_state = NavState.CREEP_TO_JUNCTION
+        self._dbg(
+            f'[CREEP_START] dist={self.distance_since_reset_m:.3f} '
+            f'offset={self.camera_axle_offset_m:.3f} '
+            f'L_open={self.creep_left_open} R_open={self.creep_right_open}')
+
+    def _execute_creep(self):
+        """Drive slowly forward until the axle offset is covered."""
+        driven = self.distance_since_reset_m - self.creep_start_distance
+        if driven >= self.camera_axle_offset_m:
+            self._stop()
+            self._dbg(
+                f'[CREEP_DONE] driven={driven:.3f} -> STOP_AND_DECIDE')
+            # update side-open snapshots with latest vision if available
+            if self.visually_left_open:
+                self.creep_left_open = True
+            if self.visually_right_open:
+                self.creep_right_open = True
+            self.nav_state = NavState.STOP_AND_DECIDE
+            return
+        t = Twist()
+        t.linear.x = self.creep_speed
+        self.cmd_pub.publish(t)
+
     # ── turning ──────────────────────────────────────────────────
 
     def _begin_turn(self, turn_dir: TurnDir):
-        if not self._gyro_fresh() or self.current_yaw_deg is None:
-            self.get_logger().warn('Cannot turn: gyro not fresh')
-            return False
         if turn_dir == TurnDir.LEFT:
             delta = 90.0
         elif turn_dir == TurnDir.RIGHT:
@@ -673,52 +727,120 @@ class Task1CameraNode(Node):
             delta = 180.0
         else:
             return False
+
         self.turn_direction = turn_dir
-        self.turn_target_yaw_deg = self._wrap_deg(self.current_yaw_deg + delta)
         self.turn_settle_counter = 0
         self.nav_state = NavState.TURNING
-        self.target_yaw_deg = self.turn_target_yaw_deg
         self.prev_heading_error = 0.0
         self.prev_angular_cmd = 0.0
-        self.get_logger().info(
-            f'Turn {turn_dir.value} | cur={self.current_yaw_deg:.1f} '
-            f'target={self.turn_target_yaw_deg:.1f}')
+
+        # record encoder steps at turn start for fallback tracking
+        self.turn_start_left_steps = self.left_steps
+        self.turn_start_right_steps = self.right_steps
+
+        if self._gyro_fresh() and self.current_yaw_deg is not None:
+            self.turn_target_yaw_deg = self._wrap_deg(self.current_yaw_deg + delta)
+            self.target_yaw_deg = self.turn_target_yaw_deg
+            self.turn_start_yaw_deg = self.current_yaw_deg
+            self.get_logger().info(
+                f'Turn {turn_dir.value} | cur={self.current_yaw_deg:.1f} '
+                f'target={self.turn_target_yaw_deg:.1f} (gyro)')
+        else:
+            # gyro unavailable — will use encoder-only turn
+            self.turn_target_yaw_deg = None
+            self.target_yaw_deg = None
+            self.turn_start_yaw_deg = None
+            self.get_logger().info(
+                f'Turn {turn_dir.value} | delta={delta:.0f}° (encoder fallback)')
         return True
 
+    def _encoder_turn_deg(self):
+        """Estimate how many degrees the robot has turned using encoder steps."""
+        if (self.turn_start_left_steps is None or self.left_steps is None
+                or self.turn_start_right_steps is None or self.right_steps is None):
+            return 0.0
+        dl = (self.left_steps - self.turn_start_left_steps) * self.enc_meters_per_step
+        dr = (self.right_steps - self.turn_start_right_steps) * self.enc_meters_per_step
+        return math.degrees((dr - dl) / self.enc_wheel_base)
+
+    def _finish_turn(self, source: str):
+        enc_deg = self._encoder_turn_deg()
+        gyro_txt = ''
+        if self.turn_start_yaw_deg is not None and self.current_yaw_deg is not None:
+            gyro_deg = self._wrap_deg(self.current_yaw_deg - self.turn_start_yaw_deg)
+            gyro_txt = f' gyro={gyro_deg:.1f}°'
+        self.get_logger().info(
+            f'Turn done ({source}) enc={enc_deg:.1f}°{gyro_txt} -> POST_TURN')
+        self._stop()
+        self.nav_state = NavState.POST_TURN
+        self.turn_direction = TurnDir.NONE
+        self.turn_target_yaw_deg = None
+        self.prev_angular_cmd = 0.0
+        self.last_junction_time = self._now_sec()
+        self.post_turn_cycles = 0
+        self.post_turn_total_cycles = max(
+            1, int(self.post_turn_forward_sec * self.control_rate_hz))
+
     def _execute_turn(self):
-        if (not self._gyro_fresh() or self.current_yaw_deg is None
-                or self.turn_target_yaw_deg is None):
+        # determine desired turn sign (+1 = left / CCW, -1 = right / CW)
+        if self.turn_direction == TurnDir.LEFT:
+            sign = 1.0
+        elif self.turn_direction == TurnDir.RIGHT:
+            sign = -1.0
+        elif self.turn_direction == TurnDir.BACK:
+            sign = 1.0  # U-turn goes left
+        else:
             self._stop()
             return
-        err = self._angle_err(self.turn_target_yaw_deg, self.current_yaw_deg)
-        if abs(err) <= self.turn_tolerance_deg:
+
+        # ── encoder-based safety limit ───────────────────────────
+        enc_deg = self._encoder_turn_deg()
+        if abs(enc_deg) >= self.turn_max_encoder_deg:
+            self._finish_turn('encoder limit')
+            return
+
+        # ── gyro-based turn (primary) ────────────────────────────
+        if (self._gyro_fresh() and self.current_yaw_deg is not None
+                and self.turn_target_yaw_deg is not None):
+            err = self._angle_err(self.turn_target_yaw_deg, self.current_yaw_deg)
+            if abs(err) <= self.turn_tolerance_deg:
+                self.turn_settle_counter += 1
+            else:
+                self.turn_settle_counter = 0
+            if self.turn_settle_counter >= self.turn_settle_cycles:
+                self._finish_turn('gyro')
+                return
+            spd = self.turn_angular_speed
+            if abs(err) < self.turn_slowdown_error_deg:
+                spd = self.turn_slow_angular_speed
+            t = Twist()
+            t.angular.z = spd if err > 0.0 else -spd
+            self.cmd_pub.publish(t)
+            return
+
+        # ── encoder-only fallback ────────────────────────────────
+        target_deg = 90.0 if self.turn_direction != TurnDir.BACK else 180.0
+        remaining = target_deg - abs(enc_deg)
+        if remaining <= self.turn_tolerance_deg:
             self.turn_settle_counter += 1
+            if self.turn_settle_counter >= self.turn_settle_cycles:
+                self._finish_turn('encoder')
+                return
         else:
             self.turn_settle_counter = 0
-        if self.turn_settle_counter >= self.turn_settle_cycles:
-            self._stop()
-            self.nav_state = NavState.POST_TURN
-            self.turn_direction = TurnDir.NONE
-            self.turn_target_yaw_deg = None
-            self.prev_angular_cmd = 0.0
-            self.last_junction_time = self._now_sec()
-            self.post_turn_cycles = 0
-            self.post_turn_total_cycles = max(
-                1, int(self.post_turn_forward_sec * self.control_rate_hz))
-            self.get_logger().info('Turn complete -> POST_TURN')
-            return
         spd = self.turn_angular_speed
-        if abs(err) < self.turn_slowdown_error_deg:
+        if remaining < self.turn_slowdown_error_deg:
             spd = self.turn_slow_angular_speed
         t = Twist()
-        t.angular.z = spd if err > 0.0 else -spd
+        t.angular.z = sign * spd
         self.cmd_pub.publish(t)
 
     # ── decision logic ───────────────────────────────────────────
 
     def _choose_turn(self):
-        left_open = self.visually_left_open
-        right_open = self.visually_right_open
+        # use latched side-open flags captured during creep
+        left_open = self.creep_left_open or self.visually_left_open
+        right_open = self.creep_right_open or self.visually_right_open
 
         self._count_block_event(left_open, right_open)
 
@@ -966,6 +1088,10 @@ class Task1CameraNode(Node):
             self._stop()
             return
 
+        if self.nav_state == NavState.CREEP_TO_JUNCTION:
+            self._execute_creep()
+            return
+
         if self.nav_state == NavState.POST_TURN:
             # brief forward after turn to clear junction visually
             self.post_turn_cycles += 1
@@ -1016,8 +1142,8 @@ class Task1CameraNode(Node):
 
         stopped = self._follow(frame_w)
         if stopped and not self._recent_junction():
-            self._dbg('[CONTROL] visually blocked -> STOP_AND_DECIDE')
-            self.nav_state = NavState.STOP_AND_DECIDE
+            self._begin_creep()
+            return
 
     # ── shutdown ─────────────────────────────────────────────────
 

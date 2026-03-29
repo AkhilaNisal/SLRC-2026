@@ -24,13 +24,15 @@ from pupil_apriltags import Detector
 def main():
     parser = argparse.ArgumentParser(description='AprilTag live detection test')
     parser.add_argument('--camera', type=int, default=0, help='Camera index (default: 0)')
-    parser.add_argument('--width', type=int, default=640, help='Capture width (default: 640)')
-    parser.add_argument('--height', type=int, default=480, help='Capture height (default: 480)')
-    parser.add_argument('--fps', type=int, default=30, help='Capture FPS (default: 30)')
+    parser.add_argument('--width', type=int, default=320, help='Capture width (default: 320)')
+    parser.add_argument('--height', type=int, default=240, help='Capture height (default: 240)')
+    parser.add_argument('--fps', type=int, default=15, help='Capture FPS (default: 15)')
     parser.add_argument('--family', type=str, default='tagStandard52h13',
                         help='AprilTag family (default: tagStandard52h13)')
-    parser.add_argument('--decimate', type=float, default=1.0,
-                        help='Quad decimate factor — higher = faster but less sensitive (default: 1.0)')
+    parser.add_argument('--decimate', type=float, default=2.0,
+                        help='Quad decimate factor — higher = faster but less sensitive (default: 2.0)')
+    parser.add_argument('--no-window', action='store_true',
+                        help='Disable the OpenCV display window (useful for headless / low-RAM Pi)')
     args = parser.parse_args()
 
     cap = cv2.VideoCapture(args.camera)
@@ -44,7 +46,7 @@ def main():
 
     detector = Detector(
         families=args.family,
-        nthreads=2,
+        nthreads=1,
         quad_decimate=args.decimate,
         quad_sigma=0.0,
         refine_edges=1,
@@ -53,7 +55,10 @@ def main():
 
     print(f'[INFO] Camera {args.camera} opened — {args.width}x{args.height} @ {args.fps}fps')
     print(f'[INFO] Detecting family: {args.family}')
-    print('[INFO] Press Q or Esc to quit.')
+    if args.no_window:
+        print('[INFO] Display window disabled — tag IDs will print to terminal only.')
+    else:
+        print('[INFO] Press Q or Esc to quit.')
 
     seen_ids: set = set()
 
@@ -88,20 +93,21 @@ def main():
                 print(f'[NEW TAG] ID={tag_id}  total unique={len(seen_ids)}  all={sorted(seen_ids)}')
 
         # HUD
-        cv2.putText(
-            frame,
-            f'Detected: {len(detections)}  Unique: {len(seen_ids)}',
-            (8, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.75,
-            (0, 255, 0),
-            2,
-        )
+        if not args.no_window:
+            cv2.putText(
+                frame,
+                f'Detected: {len(detections)}  Unique: {len(seen_ids)}',
+                (8, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (0, 255, 0),
+                2,
+            )
 
-        cv2.imshow('AprilTag Test', frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key in (ord('q'), ord('Q'), 27):  # Q or Esc
-            break
+            cv2.imshow('AprilTag Test', frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord('q'), ord('Q'), 27):  # Q or Esc
+                break
 
     cap.release()
     cv2.destroyAllWindows()
