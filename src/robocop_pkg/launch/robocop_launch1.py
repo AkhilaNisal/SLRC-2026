@@ -5,27 +5,11 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
-    mpu_node = Node(
-        package='mpu6050_ros2',
-        executable='mpu6050_node',
-        name='mpu6050_node',
-        output='screen',
-        parameters=[{
-            'i2c_bus': 1,
-            'i2c_address': 0x68,
-            'frame_id': 'imu_link',
-            'publish_rate': 50.0,
-            'stationary_gyro_threshold_dps': 0.8,
-            'stationary_accel_threshold_g': 0.08,
-            'yaw_bias_adapt_alpha': 0.001,
-        }]
-    )
-
     camera_feed_node = Node(
         package='camera_feed',
         executable='camera_feed_node',
         name='camera_feed_node',
-        output='screen'
+        output='screen',
     )
 
     apriltag_decoder_node = Node(
@@ -38,7 +22,7 @@ def generate_launch_description():
             'families': 'tagStandard52h13',
             'publish_on_each_detection': True,
             'publish_debug_image': True,
-        }]
+        }],
     )
 
     tof_node = Node(
@@ -76,31 +60,25 @@ def generate_launch_description():
         }]
     )
 
-    robot_arm_centering_action_server = Node(
-        package='robocop_pkg',
-        executable='robot_arm_centering_action_server',
-        name='robot_arm_centering_action_server',
-        output='screen',
-    )
-
     task1 = Node(
         package='robocop_pkg',
         executable='task1',
         name='task1',
         output='screen',
+        parameters=[{
+            # Steppers track straight — disable gyro heading-hold
+            'heading_weight_both': 0.0,
+            'heading_weight_missing': 0.0,
+        }],
     )
 
-    # Delay task nodes to allow hardware nodes to initialize first
+    # Delay task1 to allow hardware nodes to initialize first
     delayed_task_nodes = TimerAction(
-        period=8.0,
-        actions=[
-            robot_arm_centering_action_server,
-            task1,
-        ]
+        period=4.0,
+        actions=[task1],
     )
 
     return LaunchDescription([
-        mpu_node,
         camera_feed_node,
         apriltag_decoder_node,
         tof_node,
