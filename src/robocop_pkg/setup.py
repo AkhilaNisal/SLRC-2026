@@ -8,6 +8,7 @@ data_files.append(('share/ament_index/resource_index/packages', ['resource/' + p
 data_files.append(('share/' + package_name + '/launch', [
     'launch/robocop_launch1.py',
     'launch/robocop_launch1_camera.py',
+    'launch/robocop_launch1_hardcoded.py',
 ]))
 
 
@@ -44,6 +45,7 @@ setup(
         'console_scripts': [
             # Core task nodes
             'task1 = robocop_pkg.task1:main',
+            'task1_hardcoded = robocop_pkg.task1hardcoded:main',
             'task1_camera = robocop_pkg.task1_camera:main',
             'task2_with_arm = robocop_pkg.task2_with_arm:main',
             'task3 = robocop_pkg.task3:main',

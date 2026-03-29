@@ -2,10 +2,10 @@
 """
 Task 1 — Camera-only maze navigation.
 
-Navigates the maze using *only* the camera for perception (no ToF sensors).
-Floor-colour segmentation determines corridor centering, front-wall
-detection, and side-opening detection.  Gyro / IMU are still used for
-heading hold and 90° turn execution.
+Navigates the maze using *only* the camera and wheel encoders
+(no ToF sensors, no gyro / IMU).  Floor-colour segmentation determines
+corridor centering, front-wall detection, and side-opening detection.
+Encoder differential drives 90° turns and maze heading tracking.
 """
 
 import json
@@ -21,7 +21,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import Image, Imu
+from sensor_msgs.msg import Image
 from std_msgs.msg import Empty, Float32, Int32, Int64, String
 
 
@@ -62,8 +62,6 @@ class Task1CameraNode(Node):
         # topics
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('image_topic', '/camera/image/image_color')
-        self.declare_parameter('gyro_angle_topic', '/gyro_angle')
-        self.declare_parameter('imu_topic', '/imu/data_raw')
         self.declare_parameter('left_steps_topic', '/stepper/left_steps_total')
         self.declare_parameter('right_steps_topic', '/stepper/right_steps_total')
         self.declare_parameter('distance_since_reset_topic', '/distance_since_reset')
@@ -120,25 +118,16 @@ class Task1CameraNode(Node):
         self.declare_parameter('search_linear', 0.04)
         self.declare_parameter('search_angular', 0.30)
 
-        # ── heading-hold gains ──────────────────────────────────
-        self.declare_parameter('heading_kp', 0.025)
-        self.declare_parameter('heading_kd', 0.008)
-        self.declare_parameter('heading_weight', 0.30)
-        self.declare_parameter('heading_capture_alpha', 0.10)
-        self.declare_parameter('heading_error_limit_deg', 25.0)
-        self.declare_parameter('gyro_valid_timeout_sec', 0.50)
-
-        # ── encoder heading fusion ──────────────────────────────
+        # ── encoder geometry ─────────────────────────────────
         self.declare_parameter('encoder_wheel_radius', 0.0325)
         self.declare_parameter('encoder_wheel_base', 0.20)
         self.declare_parameter('encoder_steps_per_rev', 200)
         self.declare_parameter('encoder_microsteps', 16)
-        self.declare_parameter('imu_fusion_alpha', 0.05)
 
         # ── camera-to-axle offset ────────────────────────────────
         # distance the robot must creep forward after a visual
         # detection so the wheel axle lines up with the junction
-        self.declare_parameter('camera_axle_offset_m', 0.40)
+        self.declare_parameter('camera_axle_offset_m', 0.35)
         self.declare_parameter('creep_speed', 0.05)
 
         # ── turn controller ─────────────────────────────────────
@@ -150,7 +139,7 @@ class Task1CameraNode(Node):
         self.declare_parameter('post_turn_forward_sec', 0.50)
         self.declare_parameter('junction_cooldown_sec', 0.80)
         self.declare_parameter('prefer_left_first', True)
-        # encoder-based turn angle limit (fallback if gyro stale)
+        # encoder-based turn angle limit
         self.declare_parameter('turn_max_encoder_deg', 110.0)
 
         # ── output shaping ──────────────────────────────────────
@@ -183,8 +172,6 @@ class Task1CameraNode(Node):
         # topics
         self.cmd_vel_topic = g('cmd_vel_topic').value
         self.image_topic = g('image_topic').value
-        self.gyro_angle_topic = g('gyro_angle_topic').value
-        self.imu_topic = g('imu_topic').value
         self.left_steps_topic = g('left_steps_topic').value
         self.right_steps_topic = g('right_steps_topic').value
         self.distance_since_reset_topic = g('distance_since_reset_topic').value
@@ -233,14 +220,6 @@ class Task1CameraNode(Node):
         self.search_linear = float(g('search_linear').value)
         self.search_angular = float(g('search_angular').value)
 
-        # heading
-        self.heading_kp = float(g('heading_kp').value)
-        self.heading_kd = float(g('heading_kd').value)
-        self.heading_weight = float(g('heading_weight').value)
-        self.heading_capture_alpha = float(g('heading_capture_alpha').value)
-        self.heading_error_limit_deg = float(g('heading_error_limit_deg').value)
-        self.gyro_valid_timeout_sec = float(g('gyro_valid_timeout_sec').value)
-
         # encoder
         enc_r = float(g('encoder_wheel_radius').value)
         enc_b = float(g('encoder_wheel_base').value)
@@ -248,7 +227,6 @@ class Task1CameraNode(Node):
         enc_us = int(g('encoder_microsteps').value)
         self.enc_wheel_base = enc_b
         self.enc_meters_per_step = (2.0 * math.pi * enc_r) / (enc_spr * enc_us)
-        self.imu_fusion_alpha = float(g('imu_fusion_alpha').value)
 
         # camera-axle offset
         self.camera_axle_offset_m = float(g('camera_axle_offset_m').value)
@@ -308,13 +286,6 @@ class Task1CameraNode(Node):
         self.visually_left_open = False
         self.visually_right_open = False
 
-        # heading state
-        self.current_yaw_deg = None
-        self.last_yaw_deg = None
-        self.target_yaw_deg = None
-        self.last_gyro_msg_time = None
-        self.initial_gyro_deg = None
-        self.prev_heading_error = 0.0
         self.prev_angular_cmd = 0.0
 
         # encoder heading
@@ -323,14 +294,10 @@ class Task1CameraNode(Node):
         self.prev_left_steps = None
         self.prev_right_steps = None
         self.encoder_yaw_rad = 0.0
-        self.imu_yaw_rad = None
-        self.fused_yaw_rad = None
-        self.fused_yaw_initialized = False
 
         # nav state
         self.nav_state = NavState.FOLLOW
         self.turn_direction = TurnDir.NONE
-        self.turn_target_yaw_deg = None
         self.turn_settle_counter = 0
         self.post_turn_cycles = 0
         self.post_turn_total_cycles = 0
@@ -345,7 +312,6 @@ class Task1CameraNode(Node):
         # encoder-based turn tracking
         self.turn_start_left_steps = None
         self.turn_start_right_steps = None
-        self.turn_start_yaw_deg = None
 
         # junction / cell counting
         self.distance_since_reset_m = 0.0
@@ -378,8 +344,6 @@ class Task1CameraNode(Node):
 
         # subscribers
         self.create_subscription(Image, self.image_topic, self._image_cb, qos)
-        self.create_subscription(Float32, self.gyro_angle_topic, self._gyro_cb, qos)
-        self.create_subscription(Imu, self.imu_topic, self._imu_cb, qos)
         self.create_subscription(Int64, self.left_steps_topic, self._left_steps_cb, 10)
         self.create_subscription(Int64, self.right_steps_topic, self._right_steps_cb, 10)
         self.create_subscription(Float32, self.distance_since_reset_topic,
@@ -415,12 +379,6 @@ class Task1CameraNode(Node):
 
     def _now_sec(self):
         return self.get_clock().now().nanoseconds * 1e-9
-
-    def _gyro_fresh(self):
-        if self.last_gyro_msg_time is None:
-            return False
-        dt = (self.get_clock().now() - self.last_gyro_msg_time).nanoseconds * 1e-9
-        return dt <= self.gyro_valid_timeout_sec
 
     def _slew(self, target, prev, step):
         if target > prev + step:
@@ -543,29 +501,6 @@ class Task1CameraNode(Node):
         except Exception as e:
             self.get_logger().warn(f'Image conversion failed: {e}')
 
-    def _gyro_cb(self, msg: Float32):
-        yaw = self._wrap_deg(float(msg.data))
-        self.last_yaw_deg = self.current_yaw_deg
-
-        if self.fused_yaw_rad is not None:
-            self.current_yaw_deg = self._wrap_deg(math.degrees(self.fused_yaw_rad))
-        else:
-            self.current_yaw_deg = yaw
-
-        self.last_gyro_msg_time = self.get_clock().now()
-        if self.target_yaw_deg is None:
-            self.target_yaw_deg = self.current_yaw_deg
-        if self.initial_gyro_deg is None:
-            self.initial_gyro_deg = self.current_yaw_deg
-            self.get_logger().info(f'[MAZE] Initial gyro: {self.current_yaw_deg:.1f}°')
-
-    def _imu_cb(self, msg: Imu):
-        q = msg.orientation
-        siny = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        self.imu_yaw_rad = math.atan2(siny, cosy)
-        self._update_fused_heading()
-
     def _left_steps_cb(self, msg: Int64):
         self.left_steps = int(msg.data)
         self._update_encoder_heading()
@@ -596,7 +531,7 @@ class Task1CameraNode(Node):
         else:
             self._tag_blink_queued = True
 
-    # ── encoder / IMU heading fusion ─────────────────────────────
+    # ── encoder heading tracking ──────────────────────────────
 
     def _update_encoder_heading(self):
         if self.left_steps is None or self.right_steps is None:
@@ -615,51 +550,6 @@ class Task1CameraNode(Node):
             self.encoder_yaw_rad -= 2.0 * math.pi
         while self.encoder_yaw_rad < -math.pi:
             self.encoder_yaw_rad += 2.0 * math.pi
-        self._update_fused_heading()
-
-    def _update_fused_heading(self):
-        if self.imu_yaw_rad is None:
-            self.fused_yaw_rad = self.encoder_yaw_rad
-            return
-        if not self.fused_yaw_initialized:
-            self.encoder_yaw_rad = self.imu_yaw_rad
-            self.fused_yaw_rad = self.imu_yaw_rad
-            self.fused_yaw_initialized = True
-            self.get_logger().info(
-                f'[FUSION] Init at {math.degrees(self.imu_yaw_rad):.1f}°')
-            return
-        a = self.imu_fusion_alpha
-        err = math.atan2(
-            math.sin(self.imu_yaw_rad - self.encoder_yaw_rad),
-            math.cos(self.imu_yaw_rad - self.encoder_yaw_rad))
-        self.fused_yaw_rad = self.encoder_yaw_rad + a * err
-        while self.fused_yaw_rad > math.pi:
-            self.fused_yaw_rad -= 2.0 * math.pi
-        while self.fused_yaw_rad < -math.pi:
-            self.fused_yaw_rad += 2.0 * math.pi
-
-    # ── heading-hold ─────────────────────────────────────────────
-
-    def _update_target_heading(self):
-        if not self._gyro_fresh() or self.current_yaw_deg is None:
-            return
-        if self.target_yaw_deg is None:
-            self.target_yaw_deg = self.current_yaw_deg
-        else:
-            err = self._angle_err(self.current_yaw_deg, self.target_yaw_deg)
-            self.target_yaw_deg = self._wrap_deg(
-                self.target_yaw_deg + self.heading_capture_alpha * err)
-
-    def _heading_term(self):
-        if (not self._gyro_fresh() or self.current_yaw_deg is None
-                or self.target_yaw_deg is None):
-            return 0.0
-        err = self._angle_err(self.target_yaw_deg, self.current_yaw_deg)
-        err = self._clamp(err, -self.heading_error_limit_deg,
-                          self.heading_error_limit_deg)
-        deriv = (err - self.prev_heading_error) * self.control_rate_hz
-        self.prev_heading_error = err
-        return self.heading_weight * (self.heading_kp * err + self.heading_kd * deriv)
 
     # ── corridor centering steering ──────────────────────────────
 
@@ -701,15 +591,18 @@ class Task1CameraNode(Node):
     def _execute_creep(self):
         """Drive slowly forward until the axle offset is covered."""
         driven = self.distance_since_reset_m - self.creep_start_distance
+
+        # continuously latch any side openings seen during the creep
+        if self.visually_left_open:
+            self.creep_left_open = True
+        if self.visually_right_open:
+            self.creep_right_open = True
+
         if driven >= self.camera_axle_offset_m:
             self._stop()
             self._dbg(
-                f'[CREEP_DONE] driven={driven:.3f} -> STOP_AND_DECIDE')
-            # update side-open snapshots with latest vision if available
-            if self.visually_left_open:
-                self.creep_left_open = True
-            if self.visually_right_open:
-                self.creep_right_open = True
+                f'[CREEP_DONE] driven={driven:.3f} '
+                f'L={self.creep_left_open} R={self.creep_right_open} -> STOP_AND_DECIDE')
             self.nav_state = NavState.STOP_AND_DECIDE
             return
         t = Twist()
@@ -731,27 +624,14 @@ class Task1CameraNode(Node):
         self.turn_direction = turn_dir
         self.turn_settle_counter = 0
         self.nav_state = NavState.TURNING
-        self.prev_heading_error = 0.0
         self.prev_angular_cmd = 0.0
 
-        # record encoder steps at turn start for fallback tracking
+        # record encoder steps at turn start
         self.turn_start_left_steps = self.left_steps
         self.turn_start_right_steps = self.right_steps
 
-        if self._gyro_fresh() and self.current_yaw_deg is not None:
-            self.turn_target_yaw_deg = self._wrap_deg(self.current_yaw_deg + delta)
-            self.target_yaw_deg = self.turn_target_yaw_deg
-            self.turn_start_yaw_deg = self.current_yaw_deg
-            self.get_logger().info(
-                f'Turn {turn_dir.value} | cur={self.current_yaw_deg:.1f} '
-                f'target={self.turn_target_yaw_deg:.1f} (gyro)')
-        else:
-            # gyro unavailable — will use encoder-only turn
-            self.turn_target_yaw_deg = None
-            self.target_yaw_deg = None
-            self.turn_start_yaw_deg = None
-            self.get_logger().info(
-                f'Turn {turn_dir.value} | delta={delta:.0f}° (encoder fallback)')
+        self.get_logger().info(
+            f'Turn {turn_dir.value} | delta={delta:.0f}° (encoder)')
         return True
 
     def _encoder_turn_deg(self):
@@ -765,16 +645,11 @@ class Task1CameraNode(Node):
 
     def _finish_turn(self, source: str):
         enc_deg = self._encoder_turn_deg()
-        gyro_txt = ''
-        if self.turn_start_yaw_deg is not None and self.current_yaw_deg is not None:
-            gyro_deg = self._wrap_deg(self.current_yaw_deg - self.turn_start_yaw_deg)
-            gyro_txt = f' gyro={gyro_deg:.1f}°'
         self.get_logger().info(
-            f'Turn done ({source}) enc={enc_deg:.1f}°{gyro_txt} -> POST_TURN')
+            f'Turn done ({source}) enc={enc_deg:.1f}° -> POST_TURN')
         self._stop()
         self.nav_state = NavState.POST_TURN
         self.turn_direction = TurnDir.NONE
-        self.turn_target_yaw_deg = None
         self.prev_angular_cmd = 0.0
         self.last_junction_time = self._now_sec()
         self.post_turn_cycles = 0
@@ -793,32 +668,12 @@ class Task1CameraNode(Node):
             self._stop()
             return
 
-        # ── encoder-based safety limit ───────────────────────────
+        # ── encoder-based turn ────────────────────────────────
         enc_deg = self._encoder_turn_deg()
         if abs(enc_deg) >= self.turn_max_encoder_deg:
             self._finish_turn('encoder limit')
             return
 
-        # ── gyro-based turn (primary) ────────────────────────────
-        if (self._gyro_fresh() and self.current_yaw_deg is not None
-                and self.turn_target_yaw_deg is not None):
-            err = self._angle_err(self.turn_target_yaw_deg, self.current_yaw_deg)
-            if abs(err) <= self.turn_tolerance_deg:
-                self.turn_settle_counter += 1
-            else:
-                self.turn_settle_counter = 0
-            if self.turn_settle_counter >= self.turn_settle_cycles:
-                self._finish_turn('gyro')
-                return
-            spd = self.turn_angular_speed
-            if abs(err) < self.turn_slowdown_error_deg:
-                spd = self.turn_slow_angular_speed
-            t = Twist()
-            t.angular.z = spd if err > 0.0 else -spd
-            self.cmd_pub.publish(t)
-            return
-
-        # ── encoder-only fallback ────────────────────────────────
         target_deg = 90.0 if self.turn_direction != TurnDir.BACK else 180.0
         remaining = target_deg - abs(enc_deg)
         if remaining <= self.turn_tolerance_deg:
@@ -937,10 +792,8 @@ class Task1CameraNode(Node):
     # ── maze memory ──────────────────────────────────────────────
 
     def _snap_cardinal(self):
-        if self.current_yaw_deg is None or self.initial_gyro_deg is None:
-            return None
         rel = self._wrap_deg(
-            self.current_yaw_deg - self.initial_gyro_deg + self.maze_heading_offset)
+            math.degrees(self.encoder_yaw_rad) + self.maze_heading_offset)
         return self._wrap_deg(round(rel / 90.0) * 90.0)
 
     @staticmethod
@@ -1034,12 +887,10 @@ class Task1CameraNode(Node):
     # ── follow motion ────────────────────────────────────────────
 
     def _follow(self, frame_w):
-        """Corridor centering + heading hold.  Returns True if stopped."""
+        """Corridor centering (camera only).  Returns True if stopped."""
         twist = Twist()
 
         center = self._center_term(frame_w)
-        self._update_target_heading()
-        heading = self._heading_term()
 
         if center is None:
             # floor lost — slow search spin
@@ -1048,7 +899,7 @@ class Task1CameraNode(Node):
             self.cmd_pub.publish(twist)
             return False
 
-        raw_ang = center + heading
+        raw_ang = center
         raw_ang = self._clamp(raw_ang, -self.max_angular, self.max_angular)
         ang = self._slew(raw_ang, self.prev_angular_cmd, self.angular_slew_per_cycle)
         ang = self._clamp(ang, -self.max_angular, self.max_angular)

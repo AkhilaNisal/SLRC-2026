@@ -5,6 +5,22 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
+    mpu_node = Node(
+        package='mpu6050_ros2',
+        executable='mpu6050_node',
+        name='mpu6050_node',
+        output='screen',
+        parameters=[{
+            'i2c_bus': 1,
+            'i2c_address': 0x68,
+            'frame_id': 'imu_link',
+            'publish_rate': 50.0,
+            'stationary_gyro_threshold_dps': 0.8,
+            'stationary_accel_threshold_g': 0.08,
+            'yaw_bias_adapt_alpha': 0.001,
+        }]
+    )
+
     camera_feed_node = Node(
         package='camera_feed',
         executable='camera_feed_node',
@@ -23,6 +39,13 @@ def generate_launch_description():
             'publish_on_each_detection': True,
             'publish_debug_image': True,
         }],
+    )
+
+    tof_node = Node(
+        package='tof_sensors',
+        executable='tof_node',
+        name='tof_node',
+        output='screen',
     )
 
     cmd_vel_stepper_node = Node(
@@ -53,23 +76,29 @@ def generate_launch_description():
         }]
     )
 
-    task1_camera = Node(
+    task1_hardcoded = Node(
         package='robocop_pkg',
-        executable='task1_camera',
-        name='task1',
+        executable='task1_hardcoded',
+        name='task1_hardcoded',
         output='screen',
-        parameters=[{}],
+        parameters=[{
+            'heading_weight_both': 0.15,
+            'heading_weight_missing': 0.80,
+            'imu_fusion_alpha': 0.05,
+        }],
     )
 
     # Delay task node to allow hardware nodes to initialize first
     delayed_task_nodes = TimerAction(
         period=6.0,
-        actions=[task1_camera],
+        actions=[task1_hardcoded],
     )
 
     return LaunchDescription([
+        mpu_node,
         camera_feed_node,
         apriltag_decoder_node,
+        tof_node,
         cmd_vel_stepper_node,
         delayed_task_nodes,
     ])
