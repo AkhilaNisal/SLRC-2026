@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""task1hardcoded.py
+
+Hardcoded route B for Task 1:
+  junction 1 → LEFT
+  junction 2 → FORWARD (pass-through)
+  junction 3 → LEFT
+  junction 4 → FORWARD (pass-through)
+  junction 5 → RIGHT
+  junction 6 → FORWARD (pass-through)
+  junction 7 → LEFT
+
+All maze-exploration logic is identical to task1.py except that turn
+decisions are taken from ROUTE instead of the sensor-based explorer.
+"""
 
 import json
 import math
@@ -31,20 +45,34 @@ class TurnDir(Enum):
     NONE = 'N'
 
 
+# ── hardcoded route ───────────────────────────────────────────────
+# None = "go forward / pass-through at this junction"
+ROUTE = [
+    TurnDir.LEFT,    # junction 1
+    None,            # junction 2  (forward)
+    TurnDir.LEFT,    # junction 3
+    None,            # junction 4  (forward)
+    TurnDir.RIGHT,   # junction 5
+    None,            # junction 6  (forward)
+    TurnDir.LEFT,    # junction 7
+]
+
+
 # ── node ─────────────────────────────────────────────────────────
 
-class Task1MazeNode(Node):
+class Task1HardcodedNode(Node):
 
     # ── construction ─────────────────────────────────────────────
 
     def __init__(self):
-        super().__init__('task1')
+        super().__init__('task1_hardcoded')
         self._declare_params()
         self._read_params()
         self._init_state()
         self._init_ros()
         self._init_led()
-        self.get_logger().info('Task1 maze node started')
+        self.get_logger().info(
+            f'Task1 hardcoded node started | route={ROUTE}')
 
     # ── parameter declaration ────────────────────────────────────
 
@@ -171,7 +199,6 @@ class Task1MazeNode(Node):
         self.declare_parameter('turn_settle_cycles', 4)
         self.declare_parameter('post_turn_forward_time_sec', 0.35)
         self.declare_parameter('junction_cooldown_sec', 0.80)
-        self.declare_parameter('prefer_left_first', True)
 
     # ── parameter read ───────────────────────────────────────────
 
@@ -301,7 +328,6 @@ class Task1MazeNode(Node):
         self.turn_settle_cycles = int(p('turn_settle_cycles').value)
         self.post_turn_forward_time_sec = float(p('post_turn_forward_time_sec').value)
         self.junction_cooldown_sec = float(p('junction_cooldown_sec').value)
-        self.prefer_left_first = bool(p('prefer_left_first').value)
 
     # ── state init ───────────────────────────────────────────────
 
@@ -410,6 +436,9 @@ class Task1MazeNode(Node):
         self._led_line = None
         self._blink_count = 0
         self._blink_timer = None
+
+        # hardcoded route playback
+        self.hc_step_idx = 0
 
     # ── ROS subscriptions / publishers / timer ───────────────────
 
@@ -521,7 +550,7 @@ class Task1MazeNode(Node):
         try:
             chip = gpiod.Chip(self.led_chip_name)
             self._led_line = chip.get_line(self.led_pin)
-            self._led_line.request(consumer='task1_led',
+            self._led_line.request(consumer='task1hc_led',
                                    type=gpiod.LINE_REQ_DIR_OUT,
                                    default_vals=[0])
             self.get_logger().info(
@@ -1074,24 +1103,48 @@ class Task1MazeNode(Node):
             f'heading={self._snap_cardinal()} '
             f'visited={len(self.visited)}/{self.maze_rows * self.maze_cols}')
 
-    def _neighbor_cell(self, turn_dir):
-        cardinal = self._snap_cardinal()
-        if cardinal is None:
+    # ── hardcoded decision ────────────────────────────────────────
+
+    def _next_route_step(self):
+        """Return the next step from ROUTE, or None when exhausted."""
+        if self.hc_step_idx >= len(ROUTE):
+            self.get_logger().warn(
+                f'[HC] Route exhausted at step {self.hc_step_idx} — stopping.')
             return None
-        offsets = {TurnDir.LEFT: 90.0, TurnDir.RIGHT: -90.0, TurnDir.BACK: 180.0}
-        new_h = self._wrap_deg(cardinal + offsets.get(turn_dir, 0.0))
-        dr, dc = self._cardinal_delta(new_h)
-        return (self.robot_row + dr, self.robot_col + dc)
+        step = ROUTE[self.hc_step_idx]
+        self.hc_step_idx += 1
+        label = step.value if step is not None else 'FORWARD'
+        self.get_logger().info(
+            f'[HC] step {self.hc_step_idx}/{len(ROUTE)} -> {label}')
+        return step
 
-    def _visited_or_oob(self, cell):
-        if cell is None:
-            return True
-        r, c = cell
-        if not (0 <= r < self.maze_rows and 0 <= c < self.maze_cols):
-            return True
-        return (r, c) in self.visited
+    def _choose_turn(self):
+        """Choose turn from the hardcoded route.
 
-    # ── decision logic ───────────────────────────────────────────
+        Called when the robot is blocked (STOP_AND_DECIDE).
+        A None (forward) step here means the route expected a pass-through
+        but the front is blocked; fall back to whichever side is open.
+        """
+        left_open = (self.left_valid and self.left_range is not None
+                     and self.left_range > self.turn_open_distance)
+        right_open = (self.right_valid and self.right_range is not None
+                      and self.right_range > self.turn_open_distance)
+        self._count_block_or_dead_end(left_open, right_open)
+
+        step = self._next_route_step()
+
+        if step is None:
+            # Route exhausted or forward step at a blocked junction
+            self.get_logger().warn('[HC] FORWARD at blocked junction — sensor fallback')
+            if left_open:
+                return TurnDir.LEFT
+            if right_open:
+                return TurnDir.RIGHT
+            return TurnDir.BACK
+
+        return step
+
+    # ── decision logic helpers ───────────────────────────────────
 
     def _begin_refresh(self):
         self._dbg(f'[REFRESH_BEGIN] front={self._fmt(self.front_range)}')
@@ -1123,44 +1176,6 @@ class Task1MazeNode(Node):
         if (self.left_decision_samples >= self.decision_required_samples
                 and self.right_decision_samples >= self.decision_required_samples):
             self.nav_state = NavState.STOP_AND_DECIDE
-
-    def _choose_turn(self):
-        left_open = (self.left_valid and self.left_range is not None
-                     and self.left_range > self.turn_open_distance)
-        right_open = (self.right_valid and self.right_range is not None
-                      and self.right_range > self.turn_open_distance)
-
-        self._count_block_or_dead_end(left_open, right_open)
-
-        self._dbg(
-            f'[DECIDE] front={self._fmt(self.front_range)} '
-            f'L={self._fmt(self.left_range)} Lopen={left_open} '
-            f'R={self._fmt(self.right_range)} Ropen={right_open}')
-
-        if left_open and right_open:
-            lv = self._visited_or_oob(self._neighbor_cell(TurnDir.LEFT))
-            rv = self._visited_or_oob(self._neighbor_cell(TurnDir.RIGHT))
-            if lv and not rv:
-                choice = TurnDir.RIGHT
-            elif rv and not lv:
-                choice = TurnDir.LEFT
-            else:
-                choice = TurnDir.LEFT if self.prefer_left_first else TurnDir.RIGHT
-            self.get_logger().info(
-                f'Both open | L={self.left_range:.3f} vis={lv}  '
-                f'R={self.right_range:.3f} vis={rv} -> {choice.value}')
-            return choice
-
-        if left_open:
-            self.get_logger().info(f'Left open ({self.left_range:.3f}) -> LEFT')
-            return TurnDir.LEFT
-        if right_open:
-            self.get_logger().info(f'Right open ({self.right_range:.3f}) -> RIGHT')
-            return TurnDir.RIGHT
-
-        self.get_logger().info(
-            f'No side open L={self._fmt(self.left_range)} R={self._fmt(self.right_range)} -> BACK')
-        return TurnDir.BACK
 
     # ── apriltag + blink ─────────────────────────────────────────
 
@@ -1298,6 +1313,16 @@ class Task1MazeNode(Node):
             self._count_pass_junction(left_open, right_open)
             self.last_junction_time = self._now_sec()
 
+            # Consume a route step at this open (pass-through) junction
+            step = self._next_route_step()
+            if step is not None:
+                # Route calls for a turn here — stop and execute it
+                self._begin_refresh()
+                self.pending_block_event = False  # front was open, not blocked
+                self._begin_turn(step)
+                return
+            # step is None → route says FORWARD, keep driving straight
+
         self._dbg_periodic(
             f'[FOLLOW] F={self._fmt(self.front_range)} '
             f'L={self._fmt(self.left_range)} lockL={self.left_edge_locked} wallL={self.left_wall_present} '
@@ -1319,7 +1344,7 @@ class Task1MazeNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Task1MazeNode()
+    node = Task1HardcodedNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
