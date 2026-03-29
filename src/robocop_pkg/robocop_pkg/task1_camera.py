@@ -127,7 +127,7 @@ class Task1CameraNode(Node):
         # ── camera-to-axle offset ────────────────────────────────
         # distance the robot must creep forward after a visual
         # detection so the wheel axle lines up with the junction
-        self.declare_parameter('camera_axle_offset_m', 0.35)
+        self.declare_parameter('camera_axle_offset_m', 0.45)
         self.declare_parameter('creep_speed', 0.05)
 
         # ── turn controller ─────────────────────────────────────
