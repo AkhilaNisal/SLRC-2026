@@ -134,7 +134,7 @@ class Task1CameraNode(Node):
         self.declare_parameter('turn_angular_speed', 0.45)
         self.declare_parameter('turn_slow_angular_speed', 0.22)
         self.declare_parameter('turn_slowdown_error_deg', 18.0)
-        self.declare_parameter('turn_tolerance_deg', 3.0)
+        self.declare_parameter('turn_tolerance_deg', 22.0)
         self.declare_parameter('turn_settle_cycles', 4)
         self.declare_parameter('post_turn_forward_sec', 0.50)
         self.declare_parameter('junction_cooldown_sec', 0.80)
