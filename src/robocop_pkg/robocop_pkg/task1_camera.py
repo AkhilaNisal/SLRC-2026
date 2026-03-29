@@ -677,12 +677,8 @@ class Task1CameraNode(Node):
         target_deg = 90.0 if self.turn_direction != TurnDir.BACK else 180.0
         remaining = target_deg - abs(enc_deg)
         if remaining <= self.turn_tolerance_deg:
-            self.turn_settle_counter += 1
-            if self.turn_settle_counter >= self.turn_settle_cycles:
-                self._finish_turn('encoder')
-                return
-        else:
-            self.turn_settle_counter = 0
+            self._finish_turn('encoder')
+            return
         spd = self.turn_angular_speed
         if remaining < self.turn_slowdown_error_deg:
             spd = self.turn_slow_angular_speed
