@@ -129,11 +129,17 @@ class RobotArmActionServer(Node):
         self.declare_parameter("home.arm1_arm2_joint", -1.2566)
         self.declare_parameter("home.arm2_gripper_base_joint", 0.9250)
 
+        # pose_intermediate = [-5, 9, 37, -82]
+        self.declare_parameter("pose_intermediate.base_rotating_waste_joint", -0.0873)
+        self.declare_parameter("pose_intermediate.rotating_waste_arm1_joint", 0.1571)
+        self.declare_parameter("pose_intermediate.arm1_arm2_joint", 0.6458)
+        self.declare_parameter("pose_intermediate.arm2_gripper_base_joint", -1.4312)
+
         # grab = [-6, 80, 39, -56]
         self.declare_parameter("grab.base_rotating_waste_joint", -0.1047)
-        self.declare_parameter("grab.rotating_waste_arm1_joint", 1.3963)
-        self.declare_parameter("grab.arm1_arm2_joint", 0.6807)
-        self.declare_parameter("grab.arm2_gripper_base_joint", -0.9774)
+        self.declare_parameter("grab.rotating_waste_arm1_joint", 1.3962)
+        self.declare_parameter("grab.arm1_arm2_joint", 0.6806)
+        self.declare_parameter("grab.arm2_gripper_base_joint", -0.9773)
 
         # lift = [-6, 67, 39, -61]
         self.declare_parameter("lift.base_rotating_waste_joint", -0.1047)
@@ -439,47 +445,60 @@ class RobotArmActionServer(Node):
 
     def do_pick_place_sequence(self, goal_handle, side: str, place_prefix: str):
         home_joints = self.get_arm_joint_dict("home")
+        pose_intermediate_joints = self.get_arm_joint_dict("pose_intermediate")
         grab_joints = self.get_arm_joint_dict("grab")
         lift_joints = self.get_arm_joint_dict("lift")
         place_joints = self.get_arm_joint_dict(place_prefix)
 
-        self.publish_feedback(goal_handle, "gripper_open", 0.10)
+        self.publish_feedback(goal_handle, "move_home_start", 0.08)
+        if not self.move_arm_joint_values_with_retry(home_joints, "home"):
+            return self.fail_result(goal_handle, "Failed at step: home_start")
+        if goal_handle.is_cancel_requested:
+            return self.canceled_result(goal_handle, "Goal canceled after home_start")
+
+        self.publish_feedback(goal_handle, "gripper_open", 0.16)
         if not self.open_gripper():
             return self.fail_result(goal_handle, "Failed at step: gripper_open")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after gripper_open")
 
-        self.publish_feedback(goal_handle, "move_grab_pose", 0.25)
+        self.publish_feedback(goal_handle, "move_pose_intermediate", 0.30)
+        if not self.move_arm_joint_values_with_retry(pose_intermediate_joints, "pose_intermediate"):
+            return self.fail_result(goal_handle, "Failed at step: pose_intermediate")
+        if goal_handle.is_cancel_requested:
+            return self.canceled_result(goal_handle, "Goal canceled after pose_intermediate")
+
+        self.publish_feedback(goal_handle, "move_grab_pose", 0.42)
         if not self.move_arm_joint_values_with_retry(grab_joints, "grab"):
             return self.fail_result(goal_handle, "Failed at step: grab")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after grab")
 
-        self.publish_feedback(goal_handle, "gripper_close", 0.40)
+        self.publish_feedback(goal_handle, "gripper_close", 0.54)
         if not self.close_gripper():
             return self.fail_result(goal_handle, "Failed at step: gripper_close")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after gripper_close")
 
-        self.publish_feedback(goal_handle, "move_lift_pose", 0.55)
+        self.publish_feedback(goal_handle, "move_lift_pose", 0.66)
         if not self.move_arm_joint_values_with_retry(lift_joints, "lift"):
             return self.fail_result(goal_handle, "Failed at step: lift")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after lift")
 
-        self.publish_feedback(goal_handle, "move_base_backward", 0.70)
+        self.publish_feedback(goal_handle, "move_base_backward", 0.76)
         if not self.move_base_backward(goal_handle):
             return self.fail_result(goal_handle, "Failed at step: move_base_backward")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after move_base_backward")
 
-        self.publish_feedback(goal_handle, "move_place_pose", 0.85)
+        self.publish_feedback(goal_handle, "move_place_pose", 0.90)
         if not self.move_arm_joint_values_with_retry(place_joints, place_prefix):
             return self.fail_result(goal_handle, f"Failed at step: {place_prefix}")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after place pose")
 
-        self.publish_feedback(goal_handle, "release_box", 0.95)
+        self.publish_feedback(goal_handle, "release_box", 0.96)
         if not self.open_gripper():
             return self.fail_result(goal_handle, "Failed at step: release gripper_open")
         if goal_handle.is_cancel_requested:

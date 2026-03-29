@@ -158,11 +158,11 @@ def generate_launch_description():
         period=8.0,
         actions=[
             robot_arm_action_server,
-            robot_arm_centering_action_server,
+            # robot_arm_centering_action_server,
             # task3,
             task2_with_arm,
             # task_manager,
-            # task2,
+            # task1,
 
 
         ]

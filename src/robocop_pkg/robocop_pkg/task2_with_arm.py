@@ -347,7 +347,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         # Distance sensing / filter
         # =========================
-        self.declare_parameter('range_filter_alpha', 0.000)
+        self.declare_parameter('range_filter_alpha', 0.1)
         self.declare_parameter('left_range_filter_alpha', 0.3)
         self.declare_parameter('print_distances_every_frame', True)
 
@@ -356,25 +356,25 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         self.declare_parameter('left_box_detect_distance', 0.54)
         self.declare_parameter('right_box_detect_distance', 0.45)
-        self.declare_parameter('box_detect_frames', 6)
+        self.declare_parameter('box_detect_frames', 10)
 
-        self.declare_parameter('startup_box_ignore_distance', 0.25)
+        self.declare_parameter('startup_box_ignore_distance', 0.30)
         self.declare_parameter('same_box_ignore_distance', 0.35)
 
         # box detection by side-sensor variation pattern (relative valley detection)
-        self.declare_parameter('show_debug_windows', False-)
+        self.declare_parameter('show_debug_windows', False)
         self.declare_parameter('side_history_length', 220)
         self.declare_parameter('side_variation_fast_alpha', 0.35)
         self.declare_parameter('side_variation_baseline_alpha', 0.03)
-        self.declare_parameter('side_variation_start_drop_m', 0.018)
-        self.declare_parameter('side_variation_peak_drop_m', 0.032)
+        self.declare_parameter('side_variation_start_drop_m', 0.022)
+        self.declare_parameter('side_variation_peak_drop_m', 0.040)
         self.declare_parameter('side_variation_end_drop_m', 0.010)
         self.declare_parameter('side_variation_freeze_drop_m', 0.012)
         self.declare_parameter('side_variation_min_duration_sec', 0.35)
         self.declare_parameter('side_variation_max_duration_sec', 4.50)
-        self.declare_parameter('side_variation_min_area', 0.030)
-        self.declare_parameter('side_variation_recovery_samples', 4)
-        self.declare_parameter('side_variation_cooldown_sec', 1.20)
+        self.declare_parameter('side_variation_min_area', 0.040)
+        self.declare_parameter('side_variation_recovery_samples', 6)
+        self.declare_parameter('side_variation_cooldown_sec', 1.80)
 
         # front obstacle / wall stop
         self.declare_parameter('front_obstacle_stop_distance', 0.30)
@@ -416,7 +416,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         # =========================
         self.declare_parameter('target_box_count', 6)
         self.declare_parameter('task2_finish_wall_distance', 0.6)
-        self.declare_parameter('task2_finish_wall_frames', 1)
+        self.declare_parameter('task2_finish_wall_frames', 10)
         self.declare_parameter('task2_finish_forward_speed', 0.00)
 
         # =========================
@@ -1444,8 +1444,8 @@ class WhiteLineFollowerWithBoxVisit(Node):
             return
         try:
             cv2.imshow('task2_main_debug', vis)
-            cv2.imshow('task2_white_mask', mask)
-            cv2.imshow('task2_bottom_white_mask', bottom_mask)
+            # cv2.imshow('task2_white_mask', mask)
+            # cv2.imshow('task2_bottom_white_mask', bottom_mask)
             # cv2.imshow('task2_red_mask', red_mask)
             cv2.waitKey(1)
         except Exception as exc:
