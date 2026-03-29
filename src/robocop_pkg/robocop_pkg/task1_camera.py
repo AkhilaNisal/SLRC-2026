@@ -62,6 +62,7 @@ class Task1CameraNode(Node):
         # topics
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('image_topic', '/camera/image/image_color')
+        self.declare_parameter('gyro_angle_topic', '/gyro_angle')
         self.declare_parameter('left_steps_topic', '/stepper/left_steps_total')
         self.declare_parameter('right_steps_topic', '/stepper/right_steps_total')
         self.declare_parameter('distance_since_reset_topic', '/distance_since_reset')
@@ -134,7 +135,7 @@ class Task1CameraNode(Node):
         self.declare_parameter('turn_angular_speed', 0.45)
         self.declare_parameter('turn_slow_angular_speed', 0.22)
         self.declare_parameter('turn_slowdown_error_deg', 18.0)
-        self.declare_parameter('turn_tolerance_deg', 22.0)
+        self.declare_parameter('turn_tolerance_deg', 4.0)
         self.declare_parameter('turn_settle_cycles', 4)
         self.declare_parameter('post_turn_forward_sec', 0.50)
         self.declare_parameter('junction_cooldown_sec', 0.80)
@@ -172,6 +173,7 @@ class Task1CameraNode(Node):
         # topics
         self.cmd_vel_topic = g('cmd_vel_topic').value
         self.image_topic = g('image_topic').value
+        self.gyro_angle_topic = g('gyro_angle_topic').value
         self.left_steps_topic = g('left_steps_topic').value
         self.right_steps_topic = g('right_steps_topic').value
         self.distance_since_reset_topic = g('distance_since_reset_topic').value
@@ -309,6 +311,10 @@ class Task1CameraNode(Node):
         self.creep_left_open = False
         self.creep_right_open = False
 
+        # gyro turn tracking (used only during turns)
+        self.current_gyro_deg = None
+        self.turn_gyro_start_deg = None
+
         # encoder-based turn tracking
         self.turn_start_left_steps = None
         self.turn_start_right_steps = None
@@ -344,6 +350,7 @@ class Task1CameraNode(Node):
 
         # subscribers
         self.create_subscription(Image, self.image_topic, self._image_cb, qos)
+        self.create_subscription(Float32, self.gyro_angle_topic, self._gyro_cb, qos)
         self.create_subscription(Int64, self.left_steps_topic, self._left_steps_cb, 10)
         self.create_subscription(Int64, self.right_steps_topic, self._right_steps_cb, 10)
         self.create_subscription(Float32, self.distance_since_reset_topic,
@@ -501,6 +508,9 @@ class Task1CameraNode(Node):
         except Exception as e:
             self.get_logger().warn(f'Image conversion failed: {e}')
 
+    def _gyro_cb(self, msg: Float32):
+        self.current_gyro_deg = self._wrap_deg(float(msg.data))
+
     def _left_steps_cb(self, msg: Int64):
         self.left_steps = int(msg.data)
         self._update_encoder_heading()
@@ -626,12 +636,17 @@ class Task1CameraNode(Node):
         self.nav_state = NavState.TURNING
         self.prev_angular_cmd = 0.0
 
-        # record encoder steps at turn start
+        # record start state for both gyro and encoder
+        self.turn_gyro_start_deg = self.current_gyro_deg
         self.turn_start_left_steps = self.left_steps
         self.turn_start_right_steps = self.right_steps
 
-        self.get_logger().info(
-            f'Turn {turn_dir.value} | delta={delta:.0f}° (encoder)')
+        if self.turn_gyro_start_deg is not None:
+            self.get_logger().info(
+                f'Turn {turn_dir.value} | delta={delta:.0f}° (gyro primary)')
+        else:
+            self.get_logger().info(
+                f'Turn {turn_dir.value} | delta={delta:.0f}° (encoder fallback)')
         return True
 
     def _encoder_turn_deg(self):
@@ -668,13 +683,30 @@ class Task1CameraNode(Node):
             self._stop()
             return
 
-        # ── encoder-based turn ────────────────────────────────
+        target_deg = 90.0 if self.turn_direction != TurnDir.BACK else 180.0
+
+        # ── encoder hard-limit safety ─────────────────────────
         enc_deg = self._encoder_turn_deg()
         if abs(enc_deg) >= self.turn_max_encoder_deg:
             self._finish_turn('encoder limit')
             return
 
-        target_deg = 90.0 if self.turn_direction != TurnDir.BACK else 180.0
+        # ── gyro-based turn (primary) ─────────────────────────
+        if self.current_gyro_deg is not None and self.turn_gyro_start_deg is not None:
+            gyro_delta = abs(self._wrap_deg(self.current_gyro_deg - self.turn_gyro_start_deg))
+            remaining = target_deg - gyro_delta
+            if remaining <= self.turn_tolerance_deg:
+                self._finish_turn('gyro')
+                return
+            spd = self.turn_angular_speed
+            if remaining < self.turn_slowdown_error_deg:
+                spd = self.turn_slow_angular_speed
+            t = Twist()
+            t.angular.z = sign * spd
+            self.cmd_pub.publish(t)
+            return
+
+        # ── encoder fallback (no gyro) ────────────────────────
         remaining = target_deg - abs(enc_deg)
         if remaining <= self.turn_tolerance_deg:
             self._finish_turn('encoder')

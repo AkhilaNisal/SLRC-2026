@@ -5,6 +5,19 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
+    mpu_node = Node(
+        package='mpu6050_ros2',
+        executable='mpu6050_node',
+        name='mpu6050_node',
+        output='screen',
+        parameters=[{
+            'i2c_bus': 1,
+            'i2c_address': 0x68,
+            'frame_id': 'imu_link',
+            'publish_rate': 50.0,
+        }]
+    )
+
     camera_feed_node = Node(
         package='camera_feed',
         executable='camera_feed_node',
@@ -68,6 +81,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        mpu_node,
         camera_feed_node,
         apriltag_decoder_node,
         cmd_vel_stepper_node,
