@@ -31,6 +31,22 @@ class TurnDir(Enum):
     NONE = 'N'
 
 
+# ── hardcoded route sequences ─────────────────────────────────────
+# None entries mean "go straight / forward" at that junction.
+# Route steps are consumed in order as the robot encounters junctions.
+HARDCODED_ROUTES = {
+    'route_b': [
+        TurnDir.LEFT,    # junction 1 : turn left
+        None,            # junction 2 : forward
+        TurnDir.LEFT,    # junction 3 : turn left
+        None,            # junction 4 : forward
+        TurnDir.RIGHT,   # junction 5 : turn right
+        None,            # junction 6 : forward
+        TurnDir.LEFT,    # junction 7 : turn left
+    ],
+}
+
+
 # ── node ─────────────────────────────────────────────────────────
 
 class Task1MazeNode(Node):
@@ -173,6 +189,10 @@ class Task1MazeNode(Node):
         self.declare_parameter('junction_cooldown_sec', 0.80)
         self.declare_parameter('prefer_left_first', True)
 
+        # hardcoded route mode
+        self.declare_parameter('hardcoded_mode', False)
+        self.declare_parameter('hardcoded_route', 'route_b')
+
     # ── parameter read ───────────────────────────────────────────
 
     def _read_params(self):
@@ -303,6 +323,10 @@ class Task1MazeNode(Node):
         self.junction_cooldown_sec = float(p('junction_cooldown_sec').value)
         self.prefer_left_first = bool(p('prefer_left_first').value)
 
+        # hardcoded route mode
+        self.hardcoded_mode = bool(p('hardcoded_mode').value)
+        self.hardcoded_route_name = str(p('hardcoded_route').value)
+
     # ── state init ───────────────────────────────────────────────
 
     def _init_state(self):
@@ -410,6 +434,10 @@ class Task1MazeNode(Node):
         self._led_line = None
         self._blink_count = 0
         self._blink_timer = None
+
+        # hardcoded route playback
+        self.hardcoded_route_seq = HARDCODED_ROUTES.get(self.hardcoded_route_name, [])
+        self.hardcoded_step_idx = 0
 
     # ── ROS subscriptions / publishers / timer ───────────────────
 
@@ -1162,6 +1190,42 @@ class Task1MazeNode(Node):
             f'No side open L={self._fmt(self.left_range)} R={self._fmt(self.right_range)} -> BACK')
         return TurnDir.BACK
 
+    def _hardcoded_choose_turn(self):
+        """Return the next predetermined turn from the hardcoded route sequence.
+
+        Also handles junction/dead-end counting (same as _choose_turn).
+        Falls back to sensor-based decision when the sequence is exhausted.
+        """
+        left_open = (self.left_valid and self.left_range is not None
+                     and self.left_range > self.turn_open_distance)
+        right_open = (self.right_valid and self.right_range is not None
+                      and self.right_range > self.turn_open_distance)
+        self._count_block_or_dead_end(left_open, right_open)
+
+        if self.hardcoded_step_idx >= len(self.hardcoded_route_seq):
+            self.get_logger().warn(
+                '[HARDCODED] Sequence exhausted — falling back to sensor decision')
+            return self._choose_turn()
+
+        step = self.hardcoded_route_seq[self.hardcoded_step_idx]
+        self.hardcoded_step_idx += 1
+        total = len(self.hardcoded_route_seq)
+        label = step.value if step is not None else 'FORWARD'
+        self.get_logger().info(
+            f'[HARDCODED] step {self.hardcoded_step_idx}/{total} -> {label}')
+
+        if step is None:
+            # "Forward" at a blocked junction — best-effort sensor fallback
+            self.get_logger().warn(
+                '[HARDCODED] FORWARD step at blocked junction — using sensor fallback')
+            if left_open:
+                return TurnDir.LEFT
+            if right_open:
+                return TurnDir.RIGHT
+            return TurnDir.BACK
+
+        return step
+
     # ── apriltag + blink ─────────────────────────────────────────
 
     def _apriltag_cb(self, msg: String):
@@ -1272,7 +1336,9 @@ class Task1MazeNode(Node):
 
         if self.nav_state == NavState.STOP_AND_DECIDE:
             self._stop()
-            self._begin_turn(self._choose_turn())
+            turn = (self._hardcoded_choose_turn() if self.hardcoded_mode
+                    else self._choose_turn())
+            self._begin_turn(turn)
             return
 
         if self.nav_state == NavState.TAG_BLINK:
@@ -1297,6 +1363,29 @@ class Task1MazeNode(Node):
         if front_open and (left_open or right_open) and not self._recent_junction():
             self._count_pass_junction(left_open, right_open)
             self.last_junction_time = self._now_sec()
+
+            if self.hardcoded_mode:
+                # Consume the next hardcoded step at this open junction
+                if self.hardcoded_step_idx < len(self.hardcoded_route_seq):
+                    step = self.hardcoded_route_seq[self.hardcoded_step_idx]
+                    if step is not None:
+                        # A turn is required here — stop and execute it
+                        self.hardcoded_step_idx += 1
+                        total = len(self.hardcoded_route_seq)
+                        self.get_logger().info(
+                            f'[HARDCODED] step {self.hardcoded_step_idx}/{total} '
+                            f'-> {step.value} (open junction)')
+                        self._begin_refresh()
+                        self.pending_block_event = False  # front was open, not blocked
+                        self._begin_turn(step)
+                        return
+                    else:
+                        # Forward — just advance the index and continue
+                        self.hardcoded_step_idx += 1
+                        total = len(self.hardcoded_route_seq)
+                        self.get_logger().info(
+                            f'[HARDCODED] step {self.hardcoded_step_idx}/{total} '
+                            f'-> FORWARD (pass-through)')
 
         self._dbg_periodic(
             f'[FOLLOW] F={self._fmt(self.front_range)} '
