@@ -117,9 +117,7 @@ class Task1MazeNode(Node):
         # Filtering / edge handling
         # =========================
         self.declare_parameter('side_filter_alpha', 0.22)
-        self.declare_parameter('front_filter_alpha', 0.30)
         self.declare_parameter('max_side_jump', 0.14)
-        self.declare_parameter('max_front_jump', 2.0)
         self.declare_parameter('corridor_width_alpha', 0.10)
 
         # =========================
@@ -234,9 +232,7 @@ class Task1MazeNode(Node):
         self.angular_slew_per_cycle = float(self.get_parameter('angular_slew_per_cycle').value)
 
         self.side_filter_alpha = float(self.get_parameter('side_filter_alpha').value)
-        self.front_filter_alpha = float(self.get_parameter('front_filter_alpha').value)
         self.max_side_jump = float(self.get_parameter('max_side_jump').value)
-        self.max_front_jump = float(self.get_parameter('max_front_jump').value)
         self.corridor_width_alpha = float(self.get_parameter('corridor_width_alpha').value)
 
         self.decision_required_samples = int(self.get_parameter('decision_required_samples').value)
@@ -286,6 +282,8 @@ class Task1MazeNode(Node):
         self.left_valid = False
         self.front_valid = False
         self.right_valid = False
+
+        self.last_front_msg_time = None
 
         self.left_wall_present = False
         self.right_wall_present = False
@@ -434,13 +432,6 @@ class Task1MazeNode(Node):
             not math.isinf(x) and
             self.min_valid_range <= x <= self.max_valid_range
         )
-
-    def filtered_update(self, old_val, new_val, alpha, max_jump):
-        if old_val is None:
-            return new_val
-        if abs(new_val - old_val) > max_jump:
-            return old_val
-        return alpha * new_val + (1.0 - alpha) * old_val
 
     def ema_update(self, old_val, new_val, alpha):
         if old_val is None:
@@ -739,15 +730,8 @@ class Task1MazeNode(Node):
         self.last_front_raw = r
 
         if self.is_valid_measurement(r):
-            old_val = self.front_range
-            self.front_range = self.filtered_update(
-                self.front_range, r, self.front_filter_alpha, self.max_front_jump
-            )
+            self.front_range = r
             self.front_valid = True
-
-            self.debug_print(
-                f'[FRONT_CB] raw={self.fmt(r)} old={self.fmt(old_val)} new={self.fmt(self.front_range)}'
-            )
         else:
             self.debug_print(f'[FRONT_CB] invalid raw={self.fmt(r)}')
 

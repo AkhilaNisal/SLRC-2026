@@ -13,21 +13,29 @@ class CameraFeedNode(Node):
 
         self.bridge = CvBridge()
 
-        self.camera_index = 0
-        self.frame_width = 640
-        self.frame_height = 480
-        self.fps = 30.0
+        self.declare_parameter('camera_index', 0)
+        self.declare_parameter('frame_width', 640)
+        self.declare_parameter('frame_height', 480)
+        self.declare_parameter('fps', 30.0)
+        self.declare_parameter('image_topic', '/camera/image/image_color')
 
-        # Match your old Webots topic name here
-        self.image_topic = '/camera/image/image_color'
+        self.camera_index = self.get_parameter('camera_index').value
+        self.frame_width = self.get_parameter('frame_width').value
+        self.frame_height = self.get_parameter('frame_height').value
+        self.fps = self.get_parameter('fps').value
+        self.image_topic = self.get_parameter('image_topic').value
 
         self.image_pub = self.create_publisher(Image, self.image_topic, 10)
 
         self.cap = cv2.VideoCapture(self.camera_index)
 
         if not self.cap.isOpened():
-            self.get_logger().error(f'Cannot open camera index {self.camera_index}')
-            raise RuntimeError(f'Cannot open camera index {self.camera_index}')
+            self.get_logger().error(
+                f'Cannot open camera index {self.camera_index}. '
+                'Node will keep running — check the camera and restart. '
+                'Try --ros-args -p camera_index:=1 (or 2) if the default index is wrong.'
+            )
+            self.cap = None
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
@@ -41,6 +49,9 @@ class CameraFeedNode(Node):
         self.get_logger().info(f'Publishing images to: {self.image_topic}')
 
     def publish_frame(self):
+        if self.cap is None:
+            return
+
         ret, frame = self.cap.read()
 
         if not ret:
@@ -58,7 +69,7 @@ class CameraFeedNode(Node):
             self.get_logger().info(f'Published {self.frame_count} frames')
 
     def destroy_node(self):
-        if hasattr(self, 'cap') and self.cap.isOpened():
+        if self.cap is not None and self.cap.isOpened():
             self.cap.release()
         super().destroy_node()
 
