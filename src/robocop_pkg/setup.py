@@ -5,7 +5,10 @@ from setuptools import find_packages, setup
 package_name = 'robocop_pkg'
 data_files = []
 data_files.append(('share/ament_index/resource_index/packages', ['resource/' + package_name]))
-data_files.append(('share/' + package_name + '/launch', ['launch/robocop_launch1.py']))
+data_files.append(('share/' + package_name + '/launch', [
+    'launch/robocop_launch1.py',
+    'launch/robocop_launch1_camera.py',
+]))
 
 
 data_files.append(('share/' + package_name + '/worlds', ['worlds/my_world.wbt']))
@@ -41,6 +44,7 @@ setup(
         'console_scripts': [
             # Core task nodes
             'task1 = robocop_pkg.task1:main',
+            'task1_camera = robocop_pkg.task1_camera:main',
             'task2_with_arm = robocop_pkg.task2_with_arm:main',
             'task3 = robocop_pkg.task3:main',
             'task_manager = robocop_pkg.task_manager:main',
