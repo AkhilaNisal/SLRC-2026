@@ -5,6 +5,22 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
+    mpu_node = Node(
+        package='mpu6050_ros2',
+        executable='mpu6050_node',
+        name='mpu6050_node',
+        output='screen',
+        parameters=[{
+            'i2c_bus': 1,
+            'i2c_address': 0x68,
+            'frame_id': 'imu_link',
+            'publish_rate': 50.0,
+            'stationary_gyro_threshold_dps': 0.8,
+            'stationary_accel_threshold_g': 0.08,
+            'yaw_bias_adapt_alpha': 0.001,
+        }]
+    )
+
     camera_feed_node = Node(
         package='camera_feed',
         executable='camera_feed_node',
@@ -66,19 +82,21 @@ def generate_launch_description():
         name='task1',
         output='screen',
         parameters=[{
-            # Steppers track straight — disable gyro heading-hold
-            'heading_weight_both': 0.0,
-            'heading_weight_missing': 0.0,
+            # Heading-hold re-enabled with sensor fusion
+            'heading_weight_both': 0.15,
+            'heading_weight_missing': 0.80,
+            'imu_fusion_alpha': 0.05,
         }],
     )
 
     # Delay task1 to allow hardware nodes to initialize first
     delayed_task_nodes = TimerAction(
-        period=4.0,
+        period=6.0,
         actions=[task1],
     )
 
     return LaunchDescription([
+        mpu_node,
         camera_feed_node,
         apriltag_decoder_node,
         tof_node,

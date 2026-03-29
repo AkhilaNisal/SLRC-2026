@@ -9,9 +9,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from sensor_msgs.msg import Range
+from sensor_msgs.msg import Range, Imu
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32, Int32, Empty, String
+from std_msgs.msg import Float32, Int32, Int64, Empty, String
 
 
 class NavState(Enum):
@@ -98,6 +98,19 @@ class Task1MazeNode(Node):
         self.declare_parameter('heading_capture_alpha', 0.12)
         self.declare_parameter('heading_error_limit_deg', 25.0)
         self.declare_parameter('gyro_valid_timeout_sec', 0.50)
+
+        # =========================
+        # Encoder heading
+        # =========================
+        self.declare_parameter('left_steps_topic', '/stepper/left_steps_total')
+        self.declare_parameter('right_steps_topic', '/stepper/right_steps_total')
+        self.declare_parameter('imu_topic', '/imu/data_raw')
+        self.declare_parameter('encoder_wheel_radius', 0.0325)
+        self.declare_parameter('encoder_wheel_base', 0.20)
+        self.declare_parameter('encoder_steps_per_rev', 200)
+        self.declare_parameter('encoder_microsteps', 16)
+        # Complementary filter: 0.0 = pure encoder, 1.0 = pure IMU
+        self.declare_parameter('imu_fusion_alpha', 0.05)
 
         # =========================
         # Fusion shaping
@@ -232,6 +245,19 @@ class Task1MazeNode(Node):
         self.heading_error_limit_deg = float(self.get_parameter('heading_error_limit_deg').value)
         self.gyro_valid_timeout_sec = float(self.get_parameter('gyro_valid_timeout_sec').value)
 
+        self.left_steps_topic = self.get_parameter('left_steps_topic').value
+        self.right_steps_topic = self.get_parameter('right_steps_topic').value
+        self.imu_topic = self.get_parameter('imu_topic').value
+        enc_wheel_radius = float(self.get_parameter('encoder_wheel_radius').value)
+        enc_wheel_base = float(self.get_parameter('encoder_wheel_base').value)
+        enc_steps_per_rev = int(self.get_parameter('encoder_steps_per_rev').value)
+        enc_microsteps = int(self.get_parameter('encoder_microsteps').value)
+        self.imu_fusion_alpha = float(self.get_parameter('imu_fusion_alpha').value)
+
+        # Precompute encoder constants
+        self.enc_wheel_base = enc_wheel_base
+        self.enc_meters_per_step = (2.0 * math.pi * enc_wheel_radius) / (enc_steps_per_rev * enc_microsteps)
+
         self.wall_weight_both = float(self.get_parameter('wall_weight_both').value)
         self.wall_weight_near_front = float(self.get_parameter('wall_weight_near_front').value)
         self.near_front_fusion_distance = float(self.get_parameter('near_front_fusion_distance').value)
@@ -321,6 +347,16 @@ class Task1MazeNode(Node):
         self.target_yaw_deg = None
         self.last_gyro_msg_time = None
 
+        # Encoder heading state
+        self.left_steps = None
+        self.right_steps = None
+        self.prev_left_steps = None
+        self.prev_right_steps = None
+        self.encoder_yaw_rad = 0.0
+        self.imu_yaw_rad = None
+        self.fused_yaw_rad = None
+        self.fused_yaw_initialized = False
+
         # High-level state
         self.nav_state = NavState.FOLLOW
         self.turn_direction = TurnDir.NONE
@@ -397,6 +433,15 @@ class Task1MazeNode(Node):
         )
         self.gyro_sub = self.create_subscription(
             Float32, self.gyro_angle_topic, self.gyro_cb, qos_profile_sensor_data
+        )
+        self.imu_sub = self.create_subscription(
+            Imu, self.imu_topic, self.imu_cb, qos_profile_sensor_data
+        )
+        self.left_steps_sub = self.create_subscription(
+            Int64, self.left_steps_topic, self.left_steps_cb, 10
+        )
+        self.right_steps_sub = self.create_subscription(
+            Int64, self.right_steps_topic, self.right_steps_cb, 10
         )
 
         self.distance_sub = self.create_subscription(
@@ -875,15 +920,91 @@ class Task1MazeNode(Node):
         yaw_deg = float(msg.data)
         yaw_deg = self.wrap_angle_deg(yaw_deg)
         self.last_yaw_deg = self.current_yaw_deg
-        self.current_yaw_deg = yaw_deg
+
+        # Use fused heading if available, otherwise use raw gyro
+        if self.fused_yaw_rad is not None:
+            self.current_yaw_deg = self.wrap_angle_deg(math.degrees(self.fused_yaw_rad))
+        else:
+            self.current_yaw_deg = yaw_deg
+
         self.last_gyro_msg_time = self.get_clock().now()
 
         if self.target_yaw_deg is None:
-            self.target_yaw_deg = yaw_deg
+            self.target_yaw_deg = self.current_yaw_deg
 
         if self.initial_gyro_deg is None:
-            self.initial_gyro_deg = yaw_deg
-            self.get_logger().info(f'[MAZE] Initial gyro captured: {yaw_deg:.1f} deg')
+            self.initial_gyro_deg = self.current_yaw_deg
+            self.get_logger().info(f'[MAZE] Initial gyro captured: {self.current_yaw_deg:.1f} deg')
+
+    def imu_cb(self, msg: Imu):
+        # Extract yaw from IMU quaternion
+        q = msg.orientation
+        # yaw = atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        self.imu_yaw_rad = math.atan2(siny_cosp, cosy_cosp)
+        self._update_fused_heading()
+
+    def left_steps_cb(self, msg: Int64):
+        self.left_steps = int(msg.data)
+        self._update_encoder_heading()
+
+    def right_steps_cb(self, msg: Int64):
+        self.right_steps = int(msg.data)
+        self._update_encoder_heading()
+
+    def _update_encoder_heading(self):
+        if self.left_steps is None or self.right_steps is None:
+            return
+        if self.prev_left_steps is None:
+            self.prev_left_steps = self.left_steps
+            self.prev_right_steps = self.right_steps
+            return
+
+        dl = (self.left_steps - self.prev_left_steps) * self.enc_meters_per_step
+        dr = (self.right_steps - self.prev_right_steps) * self.enc_meters_per_step
+        self.prev_left_steps = self.left_steps
+        self.prev_right_steps = self.right_steps
+
+        dtheta = (dr - dl) / self.enc_wheel_base
+        self.encoder_yaw_rad += dtheta
+        # Wrap to [-pi, pi]
+        while self.encoder_yaw_rad > math.pi:
+            self.encoder_yaw_rad -= 2.0 * math.pi
+        while self.encoder_yaw_rad < -math.pi:
+            self.encoder_yaw_rad += 2.0 * math.pi
+
+        self._update_fused_heading()
+
+    def _update_fused_heading(self):
+        if self.imu_yaw_rad is None:
+            # Only encoders available
+            self.fused_yaw_rad = self.encoder_yaw_rad
+            return
+
+        if not self.fused_yaw_initialized:
+            # Initialize both sources to the same reference
+            self.encoder_yaw_rad = self.imu_yaw_rad
+            self.fused_yaw_rad = self.imu_yaw_rad
+            self.fused_yaw_initialized = True
+            self.get_logger().info(
+                f'[FUSION] Initialized at {math.degrees(self.imu_yaw_rad):.1f} deg'
+            )
+            return
+
+        # Complementary filter: trust encoder short-term, IMU long-term
+        alpha = self.imu_fusion_alpha
+        # Compute angular error between IMU and encoder (handles wrap)
+        err = math.atan2(
+            math.sin(self.imu_yaw_rad - self.encoder_yaw_rad),
+            math.cos(self.imu_yaw_rad - self.encoder_yaw_rad)
+        )
+        self.fused_yaw_rad = self.encoder_yaw_rad + alpha * err
+        # Wrap
+        while self.fused_yaw_rad > math.pi:
+            self.fused_yaw_rad -= 2.0 * math.pi
+        while self.fused_yaw_rad < -math.pi:
+            self.fused_yaw_rad += 2.0 * math.pi
 
     # ============================================================
     # Speed control
