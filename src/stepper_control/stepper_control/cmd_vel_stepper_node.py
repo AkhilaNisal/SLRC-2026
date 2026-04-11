@@ -35,20 +35,20 @@ class StepperControlNode(Node):
         self.declare_parameter('chip_name', 'gpiochip4')
 
         # Left motor pins
-        self.declare_parameter('left_en_pin', 22)
-        self.declare_parameter('left_dir_pin', 23)
-        self.declare_parameter('left_step_pin', 24)
+        self.declare_parameter('left_en_pin', 12) #22
+        self.declare_parameter('left_dir_pin', 5)#23
+        self.declare_parameter('left_step_pin', 6)#24
 
         # Right motor pins
-        self.declare_parameter('right_en_pin', 12)
-        self.declare_parameter('right_dir_pin', 5)
-        self.declare_parameter('right_step_pin', 6)
+        self.declare_parameter('right_en_pin', 22)#12
+        self.declare_parameter('right_dir_pin', 23)#5
+        self.declare_parameter('right_step_pin', 24)#6
 
         self.declare_parameter('enable_active_low', True)
 
         # Direction inversion
-        self.declare_parameter('left_dir_inverted', True)
-        self.declare_parameter('right_dir_inverted', False)
+        self.declare_parameter('left_dir_inverted', False)
+        self.declare_parameter('right_dir_inverted', True)
 
         # Topics
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
@@ -300,7 +300,7 @@ class StepperControlNode(Node):
 
     def cmd_vel_callback(self, msg: Twist):
         linear_x = float(msg.linear.x)
-        angular_z = -float(msg.angular.z)
+        angular_z = float(msg.angular.z)
 
         with self.lock:
             if self.control_mode == 'DIST':
