@@ -173,9 +173,9 @@ def generate_launch_description():
             robot_arm_action_server,
             # robot_arm_centering_action_server,
             # task3,
-            # task2_with_arm,
+            task2_with_arm,
             # task_manager,
-            task1,
+            # task1,
 
 
         ]

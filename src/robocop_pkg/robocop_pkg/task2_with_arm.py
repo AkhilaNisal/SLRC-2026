@@ -316,12 +316,22 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('bottom_min_area', 2500)
         self.declare_parameter('line_gone_frames', 5)
 
+        # self.declare_parameter('h_low', 0)
+        # self.declare_parameter('s_low', 0)
+        # self.declare_parameter('v_low', 180)
+        # self.declare_parameter('h_high', 180)
+        # self.declare_parameter('s_high', 70)
+        # self.declare_parameter('v_high', 255)
+
+
+        # Black line detection (for black line on white floor)
+        # =========================
         self.declare_parameter('h_low', 0)
         self.declare_parameter('s_low', 0)
-        self.declare_parameter('v_low', 180)
+        self.declare_parameter('v_low', 0)        # Dark pixels
         self.declare_parameter('h_high', 180)
-        self.declare_parameter('s_high', 70)
-        self.declare_parameter('v_high', 255)
+        self.declare_parameter('s_high', 255)
+        self.declare_parameter('v_high', 100)     # Low brightness
 
         # =========================
         # Red box detection
@@ -362,7 +372,7 @@ class WhiteLineFollowerWithBoxVisit(Node):
         self.declare_parameter('same_box_ignore_distance', 0.35)
 
         # box detection by side-sensor variation pattern (relative valley detection)
-        self.declare_parameter('show_debug_windows', False)
+        self.declare_parameter('show_debug_windows', True)
         self.declare_parameter('side_history_length', 220)
         self.declare_parameter('side_variation_fast_alpha', 0.35)
         self.declare_parameter('side_variation_baseline_alpha', 0.03)

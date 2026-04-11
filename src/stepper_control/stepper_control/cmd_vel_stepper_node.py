@@ -47,8 +47,8 @@ class StepperControlNode(Node):
         self.declare_parameter('enable_active_low', True)
 
         # Direction inversion
-        self.declare_parameter('left_dir_inverted', False)
-        self.declare_parameter('right_dir_inverted', True)
+        self.declare_parameter('left_dir_inverted', True)
+        self.declare_parameter('right_dir_inverted', False)
 
         # Topics
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
@@ -300,7 +300,7 @@ class StepperControlNode(Node):
 
     def cmd_vel_callback(self, msg: Twist):
         linear_x = float(msg.linear.x)
-        angular_z = float(msg.angular.z)
+        angular_z = -float(msg.angular.z)
 
         with self.lock:
             if self.control_mode == 'DIST':
