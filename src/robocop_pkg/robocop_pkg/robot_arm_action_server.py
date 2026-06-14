@@ -129,63 +129,69 @@ class RobotArmActionServer(Node):
         self.declare_parameter("home.arm1_arm2_joint", -1.2566)
         self.declare_parameter("home.arm2_gripper_base_joint", 0.9250)
 
-        # grab = [5, 56, 40, -79]      5,71,40, -62
-        self.declare_parameter("grab.base_rotating_waste_joint", 0.0873)
-        self.declare_parameter("grab.rotating_waste_arm1_joint", 0.9774)
-        self.declare_parameter("grab.arm1_arm2_joint", 0.6981)
-        self.declare_parameter("grab.arm2_gripper_base_joint", -1.3788)
+        # pose_intermediate = [-5, 9, 37, -82]
+        self.declare_parameter("pose_intermediate.base_rotating_waste_joint", -0.0873)
+        self.declare_parameter("pose_intermediate.rotating_waste_arm1_joint", 0.1571)
+        self.declare_parameter("pose_intermediate.arm1_arm2_joint", 0.6458)
+        self.declare_parameter("pose_intermediate.arm2_gripper_base_joint", -1.4312)
 
-        # lift = [5, 45, 40, -81]     5,61,40,-68
-        self.declare_parameter("lift.base_rotating_waste_joint", 0.0873)
-        self.declare_parameter("lift.rotating_waste_arm1_joint", 0.7854)
-        self.declare_parameter("lift.arm1_arm2_joint", 0.6981)
-        self.declare_parameter("lift.arm2_gripper_base_joint", -1.4137)
+        # grab = [-6, 80, 39, -56]
+        self.declare_parameter("grab.base_rotating_waste_joint", -0.1047)
+        self.declare_parameter("grab.rotating_waste_arm1_joint", 1.3962)
+        self.declare_parameter("grab.arm1_arm2_joint", 0.6806)
+        self.declare_parameter("grab.arm2_gripper_base_joint", -0.9773)
 
-        # place1 = [-16, 12, -100, 67]    -16,-7,-110,50
-        self.declare_parameter("place1.base_rotating_waste_joint", -0.2793)
-        self.declare_parameter("place1.rotating_waste_arm1_joint", 0.2094)
-        self.declare_parameter("place1.arm1_arm2_joint", -1.7453)
-        self.declare_parameter("place1.arm2_gripper_base_joint", 1.1694)
+        # lift = [-6, 67, 39, -61]
+        self.declare_parameter("lift.base_rotating_waste_joint", -0.1047)
+        self.declare_parameter("lift.rotating_waste_arm1_joint", 1.1694)
+        self.declare_parameter("lift.arm1_arm2_joint", 0.6807)
+        self.declare_parameter("lift.arm2_gripper_base_joint", -1.0647)
 
-        # place2 = [23, -4, -92, 75]    37, -4,-114,46
-        self.declare_parameter("place2.base_rotating_waste_joint", 0.4014)
-        self.declare_parameter("place2.rotating_waste_arm1_joint", -0.0698)
-        self.declare_parameter("place2.arm1_arm2_joint", -1.6057)
-        self.declare_parameter("place2.arm2_gripper_base_joint", 1.3090)
+        # place1 = [-28, 2, -117, 51]
+        self.declare_parameter("place1.base_rotating_waste_joint", -0.4887)
+        self.declare_parameter("place1.rotating_waste_arm1_joint", 0.0349)
+        self.declare_parameter("place1.arm1_arm2_joint", -2.0420)
+        self.declare_parameter("place1.arm2_gripper_base_joint", 0.8901)
 
-        # place3 = [60, 16, -79, 81]
-        self.declare_parameter("place3.base_rotating_waste_joint", 1.0472)
-        self.declare_parameter("place3.rotating_waste_arm1_joint", 0.2793)
-        self.declare_parameter("place3.arm1_arm2_joint", -1.3788)
-        self.declare_parameter("place3.arm2_gripper_base_joint", 1.4137)
+        # place2 = [-3, -24, -84, 57]
+        self.declare_parameter("place2.base_rotating_waste_joint", -0.0524)
+        self.declare_parameter("place2.rotating_waste_arm1_joint", -0.4189)
+        self.declare_parameter("place2.arm1_arm2_joint", -1.4661)
+        self.declare_parameter("place2.arm2_gripper_base_joint", 0.9948)
 
-        # place4 = same as place1
-        self.declare_parameter("place4.base_rotating_waste_joint", -0.2793)
-        self.declare_parameter("place4.rotating_waste_arm1_joint", 0.2094)
-        self.declare_parameter("place4.arm1_arm2_joint", -1.7453)
-        self.declare_parameter("place4.arm2_gripper_base_joint", 1.1694)
+        # place3 = [39, -4, -120, 48]
+        self.declare_parameter("place3.base_rotating_waste_joint", 0.6807)
+        self.declare_parameter("place3.rotating_waste_arm1_joint", -0.0698)
+        self.declare_parameter("place3.arm1_arm2_joint", -2.0944)
+        self.declare_parameter("place3.arm2_gripper_base_joint", 0.8378)
 
-        # place5 = same as place2
-        self.declare_parameter("place5.base_rotating_waste_joint", 0.4014)
-        self.declare_parameter("place5.rotating_waste_arm1_joint", -0.0698)
-        self.declare_parameter("place5.arm1_arm2_joint", -1.6057)
-        self.declare_parameter("place5.arm2_gripper_base_joint", 1.3090)
+        # place4 = [51, -40, -76, 55]
+        self.declare_parameter("place4.base_rotating_waste_joint", 0.8901)
+        self.declare_parameter("place4.rotating_waste_arm1_joint", -0.6981)
+        self.declare_parameter("place4.arm1_arm2_joint", -1.3265)
+        self.declare_parameter("place4.arm2_gripper_base_joint", 0.9599)
 
-        # place6 = same as place3
-        self.declare_parameter("place6.base_rotating_waste_joint", 1.0472)
-        self.declare_parameter("place6.rotating_waste_arm1_joint", 0.2793)
-        self.declare_parameter("place6.arm1_arm2_joint", -1.3788)
-        self.declare_parameter("place6.arm2_gripper_base_joint", 1.4137)
+        # place5 = [90, -10, -109, 48]
+        self.declare_parameter("place5.base_rotating_waste_joint", 1.5708)
+        self.declare_parameter("place5.rotating_waste_arm1_joint", -0.1745)
+        self.declare_parameter("place5.arm1_arm2_joint", -1.9024)
+        self.declare_parameter("place5.arm2_gripper_base_joint", 0.8378)
+
+        # place6 = [20, 37, -72, 53]
+        self.declare_parameter("place6.base_rotating_waste_joint", 0.3491)
+        self.declare_parameter("place6.rotating_waste_arm1_joint", 0.6458)
+        self.declare_parameter("place6.arm1_arm2_joint", -1.2566)
+        self.declare_parameter("place6.arm2_gripper_base_joint", 0.9250)
 
         # restore = [-5, 76, 45, 35]
         self.declare_parameter("restore.base_rotating_waste_joint", -0.0873)
         self.declare_parameter("restore.rotating_waste_arm1_joint", 1.3265)
         self.declare_parameter("restore.arm1_arm2_joint", 0.7854)
         self.declare_parameter("restore.arm2_gripper_base_joint", 0.6109)
- 
-        # gripper
-        self.declare_parameter("gripper_open.gripper_base_left_joint", -0.9)
-        self.declare_parameter("gripper_close.gripper_base_left_joint", 0.5)
+
+        # gripper = [-26, 54]
+        self.declare_parameter("gripper_open.gripper_base_left_joint", -0.4538)
+        self.declare_parameter("gripper_close.gripper_base_left_joint", 0.9425)
 
         self.declare_parameter("restore_box_count", 3)
 
@@ -439,47 +445,60 @@ class RobotArmActionServer(Node):
 
     def do_pick_place_sequence(self, goal_handle, side: str, place_prefix: str):
         home_joints = self.get_arm_joint_dict("home")
+        pose_intermediate_joints = self.get_arm_joint_dict("pose_intermediate")
         grab_joints = self.get_arm_joint_dict("grab")
         lift_joints = self.get_arm_joint_dict("lift")
         place_joints = self.get_arm_joint_dict(place_prefix)
 
-        self.publish_feedback(goal_handle, "gripper_open", 0.10)
+        self.publish_feedback(goal_handle, "move_home_start", 0.08)
+        if not self.move_arm_joint_values_with_retry(home_joints, "home"):
+            return self.fail_result(goal_handle, "Failed at step: home_start")
+        if goal_handle.is_cancel_requested:
+            return self.canceled_result(goal_handle, "Goal canceled after home_start")
+
+        self.publish_feedback(goal_handle, "gripper_open", 0.16)
         if not self.open_gripper():
             return self.fail_result(goal_handle, "Failed at step: gripper_open")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after gripper_open")
 
-        self.publish_feedback(goal_handle, "move_grab_pose", 0.25)
+        self.publish_feedback(goal_handle, "move_pose_intermediate", 0.30)
+        if not self.move_arm_joint_values_with_retry(pose_intermediate_joints, "pose_intermediate"):
+            return self.fail_result(goal_handle, "Failed at step: pose_intermediate")
+        if goal_handle.is_cancel_requested:
+            return self.canceled_result(goal_handle, "Goal canceled after pose_intermediate")
+
+        self.publish_feedback(goal_handle, "move_grab_pose", 0.42)
         if not self.move_arm_joint_values_with_retry(grab_joints, "grab"):
             return self.fail_result(goal_handle, "Failed at step: grab")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after grab")
 
-        self.publish_feedback(goal_handle, "gripper_close", 0.40)
+        self.publish_feedback(goal_handle, "gripper_close", 0.54)
         if not self.close_gripper():
             return self.fail_result(goal_handle, "Failed at step: gripper_close")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after gripper_close")
 
-        self.publish_feedback(goal_handle, "move_lift_pose", 0.55)
+        self.publish_feedback(goal_handle, "move_lift_pose", 0.66)
         if not self.move_arm_joint_values_with_retry(lift_joints, "lift"):
             return self.fail_result(goal_handle, "Failed at step: lift")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after lift")
 
-        self.publish_feedback(goal_handle, "move_base_backward", 0.70)
+        self.publish_feedback(goal_handle, "move_base_backward", 0.76)
         if not self.move_base_backward(goal_handle):
             return self.fail_result(goal_handle, "Failed at step: move_base_backward")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after move_base_backward")
 
-        self.publish_feedback(goal_handle, "move_place_pose", 0.85)
+        self.publish_feedback(goal_handle, "move_place_pose", 0.90)
         if not self.move_arm_joint_values_with_retry(place_joints, place_prefix):
             return self.fail_result(goal_handle, f"Failed at step: {place_prefix}")
         if goal_handle.is_cancel_requested:
             return self.canceled_result(goal_handle, "Goal canceled after place pose")
 
-        self.publish_feedback(goal_handle, "release_box", 0.95)
+        self.publish_feedback(goal_handle, "release_box", 0.96)
         if not self.open_gripper():
             return self.fail_result(goal_handle, "Failed at step: release gripper_open")
         if goal_handle.is_cancel_requested:
