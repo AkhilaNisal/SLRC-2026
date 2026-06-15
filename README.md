@@ -1,7 +1,7 @@
 # 🤖 SLRC-2026 Autonomous Mobile Manipulation Robot
 
 <p align="center">
-  <img src="images/robot_banner.png" width="800"/>
+  <img src="media/image1.jpeg" width="800"/>
 </p>
 
 ## 🚀 Overview
@@ -23,29 +23,15 @@ The system integrates:
 ## 🎥 Demonstrations
 
 ### 🦾 Real Robot Demo
-<p align="center">
-  <img src="images/real_robot.jpg" width="700"/>
-</p>
 
-https://github.com/user-attachments/assets/real_robot_demo.mp4
+https://github.com/AkhilaNisal/media/video.mp4
 
 ---
 
 ### 🧪 Simulation Demo (Webots)
-<p align="center">
-  <img src="images/simulation.png" width="700"/>
-</p>
 
-https://github.com/user-attachments/assets/simulation_demo.mp4
 
----
-
-### 🦾 MoveIt Arm Control
-<p align="center">
-  <img src="images/moveit_rviz.png" width="700"/>
-</p>
-
-https://github.com/user-attachments/assets/arm_demo.mp4
+https://github.com/AkhilaNisal/media/simulation.mp4
 
 ---
 
