@@ -112,7 +112,7 @@ src/
 └── robot_test
 ```
 ## 🧩 Package Overview
-
+```
 robocop_pkg:
 Core intelligence for task execution, mission control, navigation coordination, and action server communication.
 
@@ -163,9 +163,9 @@ Calibration and tuning tools.
 
 robot_test:
 Testing and debugging utilities.
-
+```
 ## 🧭 System Architecture
-
+```
 Camera + Sensors
       ↓
 Computer Vision Layer
@@ -176,18 +176,18 @@ Navigation System → Mobile Base
 Manipulation System → 5-DOF Arm
       ↓
 Autonomous SLRC Tasks
-
+```
 ## ⚙️ Build Instructions
-
+```
 mkdir -p ~/slrc_ws/src
 cd ~/slrc_ws
 git clone https://github.com/AkhilaNisal/SLRC-2026.git src/SLRC-2026
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash
-
+```
 ## ▶️ Run Instructions
-
+```
 colcon build --symlink-install
 source install/setup.bash
 
@@ -197,7 +197,7 @@ ros2 launch robot_arm_moveit_config moveit.launch.py
 
 ros2 run robocop_pkg task1
 ros2 run robocop_pkg task2
-
+```
 ## 🏁 Competition
 
 Sri Lanka Robotics Challenge (SLRC) 2026  
