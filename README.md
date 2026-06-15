@@ -205,7 +205,7 @@ University of Moratuwa, Sri Lanka
 
 ## 👨‍💻 Authors
 
-SLRC 2026 Robotics Team
+Team Thunderbots
 
 ## 📜 License
 
