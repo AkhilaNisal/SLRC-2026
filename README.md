@@ -91,7 +91,7 @@ https://github.com/AkhilaNisal/media/simulation.mp4
 ---
 
 ## 📁 Repository Structure
-
+```
 src/
 ├── robocop_pkg
 ├── camera_feed
@@ -110,7 +110,7 @@ src/
 ├── rpi_arm_hardware
 ├── arm_pose_tuner
 └── robot_test
-
+```
 ## 🧩 Package Overview
 
 robocop_pkg:
