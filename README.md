@@ -1,7 +1,7 @@
 # 🤖 SLRC-2026 Autonomous Mobile Manipulation Robot
 
 <p align="center">
-  <img src="media/image1.jpeg" width="800"/>
+  <img src="media/image1.jpeg" width="300"/>
 </p>
 
 ## 🚀 Overview
